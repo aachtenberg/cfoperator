@@ -95,14 +95,17 @@ const tick=()=>new Promise(r=>setImmediate(r));
   const out={firstFetch:fetched[0], rows:els['rows'].innerHTML};
   out.listNamesInvestigated=out.rows.indexOf('title="investigated by">groq/openai/gpt-oss-120b')>=0;
   out.listNamesTriage=out.rows.indexOf('title="triaged by">ollama/qwen3:8b')>=0;
-  out.listBlankWithoutModel=/<td><span class="muted">—<\/span><\/td>/.test(out.rows);
+  // A row whose alert never reached a model names none: fewer stamps than
+  // rows, and no placeholder standing in for one.
+  out.listBlankWithoutModel=(out.rows.match(/<tr id="row-/g)||[]).length>(out.rows.match(/title="(?:investigated|triaged) by"/g)||[]).length
+    && !/unknown/i.test(out.rows);
   if(scenario==='from-url'){
     out.sourceSelect=els['f-source'].value; out.windowSelect=els['f-window'].value; out.searchBox=els['f-q'].value;
   }
   if(scenario==='flow'){
     box.setFilter('status','failed'); await tick(); await tick();
     out.afterFilterFetch=fetched[fetched.length-1]; out.afterFilterUrl=urls[urls.length-1];
-    out.afterFilterRows=(els['rows'].innerHTML.match(/<tr /g)||[]).length;
+    out.afterFilterRows=(els['rows'].innerHTML.match(/<tr id="row-/g)||[]).length;
     box.setFilter('status',''); await tick(); await tick();
     out.moreHiddenWithoutCursor=els['more'].hidden;
     await box.detail('alert-2');
@@ -119,11 +122,12 @@ const tick=()=>new Promise(r=>setImmediate(r));
     out.hashAfterClose=loc.hash;
   }
   if(scenario==='paging'){
-    out.firstPageRows=(els['rows'].innerHTML.match(/<tr /g)||[]).length;
+    // Alert rows, by their id: a sweep group adds a header row of its own (CFOP-696).
+    out.firstPageRows=(els['rows'].innerHTML.match(/<tr id="row-/g)||[]).length;
     out.moreShown=!els['more'].hidden;
     await box.loadMore(); await tick();
     out.moreFetch=fetched[fetched.length-1];
-    out.rowsAfterMore=(els['rows'].innerHTML.match(/<tr /g)||[]).length;
+    out.rowsAfterMore=(els['rows'].innerHTML.match(/<tr id="row-/g)||[]).length;
     out.distinctRows=new Set((els['rows'].innerHTML.match(/data-id="([^"]+)"/g)||[])).size;
     out.moreHiddenAtEnd=els['more'].hidden;
   }

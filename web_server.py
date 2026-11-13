@@ -386,6 +386,22 @@ class WebServer:
         def common_js():
             return send_from_directory('ui', 'common.js', mimetype='application/javascript')
 
+        # The console's one stylesheet (CFOP-696): tokens, the rail, the
+        # shared kit. Same posture as the two scripts above — served by an
+        # explicit route, typed, and behind the login like the pages that
+        # link it. login.html does not use it.
+        @self.app.route('/console.css')
+        def console_css():
+            return send_from_directory('ui', 'console.css', mimetype='text/css')
+
+        # Inbox (CFOP-696): everything waiting on a human, on one page. It
+        # reads the same APIs the list pages do and has none of its own. Not
+        # at "/": /?investigation= and /?remediation= are how a drawer hands
+        # its row to the chat, and the chat stays there.
+        @self.app.route('/inbox')
+        def inbox_page():
+            return send_from_directory('ui', 'inbox.html')
+
         # Health check. `version` is the baked build version (CFOP-92) — the
         # image tag for a CI build, "dev" from source — and it is what the
         # console status bar and cfassist's banner show, so it is the answer

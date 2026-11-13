@@ -1,0 +1,280 @@
+/*
+ * The console's one stylesheet (CFOP-696).
+ *
+ * Six pages each carried their own copy of the tokens, the header, the chips,
+ * the badge, the table and the drawer, and the copies had drifted (three
+ * drawer widths, two active-chip colours, a 12px gap here and a 14px one
+ * there). This is the one copy. Served from /console.css (see web_server.py),
+ * authenticated like nav.js and common.js; login.html, which an
+ * unauthenticated browser has to be able to paint, keeps its own few rules.
+ *
+ * Linked BEFORE a page's own <style>, so a page can still say what is only
+ * its own (the cockpit, the chat) and win. What belongs to every page belongs
+ * here: test_console_shell.py fails a page that redefines a token.
+ *
+ * Nothing here is fetched from anywhere. The font stacks name Inter and
+ * JetBrains Mono and fall back to the system's sans and mono; this box has no
+ * outbound network, so a webfont URL would hang, not fail.
+ */
+
+:root {
+  /* surfaces, darkest to lightest */
+  --bg-primary:#0a0a0f; --bg-rail:#0e0e15; --bg-secondary:#12121a; --bg-row:#15151f;
+  --bg-tertiary:#1a1a26; --bg-hover:#22222e;
+  --border:#2a2a3a; --border-subtle:#1e1e2e; --border-faint:#1a1a26;
+  /* text: secondary and muted both clear 4.5:1 on every surface above; dim is
+     for marks that are not text (a separator, an off dot). */
+  --text-primary:#e0e0e8; --text-secondary:#a4a4b8; --text-muted:#84849a; --text-dim:#55556a;
+  --link:#5eead4; --link-hover:#99f6e4;
+  --accent:#22c55e; --accent-hover:#4ade80; --accent-dim:#166534; --on-accent:#04210f;
+  --cyan:#06b6d4; --orange:#f59e0b; --red:#ef4444; --purple:#a371f7;
+  --radius:10px; --radius-sm:8px; --radius-xs:6px;
+  --font-ui:Inter,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --rail-w:232px;
+  /* The page header no longer sticks, so a sticky table head sits at the top. */
+  --header-height:0px;
+}
+
+* { box-sizing:border-box; }
+/* The hidden attribute means hidden. The browser's own [hidden] rule loses to
+   any author rule that sets display, and most of the kit below does (.chip,
+   .badge, .card-head, the rail's logout): without this, a hidden logout, an
+   empty count pill and Admin's "Cancel edit" all show. */
+[hidden] { display:none !important; }
+/* Controls do not inherit the page face on their own. */
+button, input, select, textarea { font-family:inherit; }
+body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
+  font-family:var(--font-ui); font-size:14px; padding-left:var(--rail-w); }
+a { color:var(--link); text-decoration:none; }
+a:hover { color:var(--link-hover); }
+.mono, code, pre, kbd { font-family:var(--font-mono); }
+.muted { color:var(--text-secondary); font-size:12px; }
+.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+
+/* ---- the rail (ui/nav.js renders it into #cfop-nav) ----------------------- */
+.cfop-rail { position:fixed; top:0; left:0; bottom:0; width:var(--rail-w); z-index:30;
+  padding:16px 12px; background:var(--bg-rail); border-right:1px solid var(--border-subtle);
+  display:flex; flex-direction:column; gap:20px; overflow-y:auto; font-size:14px;
+  /* Its own face and leading: the chat page's body is mono, and the rail is the same rail there. */
+  font-family:var(--font-ui); line-height:normal; }
+.cfop-brand { display:flex; align-items:center; gap:10px; padding:4px 10px; color:var(--text-primary);
+  font-weight:700; font-size:16px; letter-spacing:-.01em; }
+.cfop-brand:hover { color:var(--text-primary); }
+.cfop-brand svg { width:24px; height:24px; color:var(--accent); flex:none; }
+.cfop-nav { display:flex; flex-direction:column; gap:2px; }
+.cfop-nav a { display:flex; align-items:center; gap:10px; padding:0 10px; min-height:40px;
+  border-radius:var(--radius-sm); color:var(--text-secondary); }
+.cfop-nav a:hover { background:var(--bg-tertiary); color:var(--text-primary); }
+/* Active entry: a surface and an outline, and never colour alone — the
+   [aria-current] attribute carries it for anyone not seeing the difference. */
+.cfop-nav a[aria-current="page"] { background:var(--bg-tertiary); color:var(--text-primary);
+  box-shadow:inset 0 0 0 1px var(--border); font-weight:500; }
+.cfop-nav a svg { width:18px; height:18px; flex:none; }
+.cfop-nav a .lbl { flex:1; }
+.cfop-rail a:focus-visible, .cfop-rail button:focus-visible, .cfop-ask:focus-visible {
+  outline:2px solid var(--cyan); outline-offset:2px; }
+.cfop-sep { height:1px; background:var(--border-subtle); flex:none; }
+.cfop-status { margin-top:auto; display:flex; flex-direction:column; gap:10px; padding:12px;
+  border:1px solid var(--border-subtle); border-radius:var(--radius); background:var(--bg-secondary);
+  font-size:12px; color:var(--text-secondary); }
+.cfop-status:empty { display:none; }
+.cfop-status .row { display:flex; justify-content:space-between; gap:10px; }
+.cfop-status .row .mono { color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cfop-status .row .mono.quiet { color:var(--text-muted); }
+.cfop-status .conn { display:flex; align-items:center; gap:8px; color:var(--text-primary); }
+.cfop-status .conn .up { margin-left:auto; color:var(--text-muted); }
+.cfop-status .conn i { width:8px; height:8px; border-radius:50%; background:var(--accent); flex:none; }
+.cfop-status .conn.down i { background:var(--red); }
+.cfop-status:not(:empty) + .cfop-id { margin-top:0; }
+.cfop-id { margin-top:auto; display:flex; align-items:center; gap:10px; padding:0 6px; min-height:40px; }
+.cfop-avatar { width:32px; height:32px; border-radius:50%; background:var(--bg-tertiary);
+  border:1px solid var(--border); display:grid; place-items:center; font-size:12px; font-weight:600; flex:none; }
+.cfop-who { display:flex; flex-direction:column; flex:1; min-width:0; font-size:13px; }
+.cfop-who .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cfop-who .role { font-size:12px; color:var(--text-muted); }
+.cfop-logout { background:transparent; border:1px solid transparent; color:var(--text-secondary);
+  border-radius:var(--radius-sm); min-width:40px; min-height:40px; cursor:pointer;
+  display:grid; place-items:center; }
+.cfop-logout:hover { color:var(--red); background:var(--bg-tertiary); }
+.cfop-logout:disabled { opacity:.5; cursor:default; }
+.cfop-logout svg { width:18px; height:18px; }
+
+/* Ask CFOperator: the chat is one click from anywhere (nav.js adds it to
+   every page but the chat itself). */
+.cfop-ask { position:fixed; right:28px; bottom:28px; z-index:35; display:grid; place-items:center;
+  width:56px; height:56px; border-radius:50%; background:var(--accent); color:var(--on-accent);
+  box-shadow:0 8px 24px rgba(0,0,0,.55), 0 0 0 4px rgba(34,197,94,.12); transition:transform .15s, background .15s; }
+.cfop-ask:hover, .cfop-ask:focus-visible { color:var(--on-accent); background:var(--accent-hover); transform:scale(1.06); }
+.cfop-ask svg { width:26px; height:26px; }
+.cfop-ask .tip { position:absolute; right:68px; top:50%; transform:translateY(-50%); padding:6px 10px;
+  border-radius:var(--radius-xs); background:var(--bg-tertiary); border:1px solid var(--border);
+  color:var(--text-primary); font-size:13px; font-weight:500; white-space:nowrap; opacity:0;
+  pointer-events:none; transition:opacity .15s; }
+.cfop-ask:hover .tip, .cfop-ask:focus-visible .tip { opacity:1; }
+@media (prefers-reduced-motion: reduce) { .cfop-ask, .cfop-ask .tip { transition:none; } }
+
+/* Below the width where a 232px rail leaves too little page, keep the icons
+   and drop the words — what the header nav did before it was a rail. */
+@media (max-width: 900px) {
+  :root { --rail-w:56px; }
+  .cfop-rail { padding:12px 8px; gap:12px; }
+  .cfop-brand { padding:4px; justify-content:center; }
+  .cfop-brand span, .cfop-nav a .lbl, .cfop-status, .cfop-who, .cfop-avatar { display:none; }
+  .cfop-nav a { justify-content:center; padding:0; position:relative; }
+  .cfop-nav a .badge { position:absolute; top:2px; right:0; padding:0 5px; font-size:10px; line-height:15px; }
+  .cfop-id { padding:0; justify-content:center; }
+  .cfop-ask { right:16px; bottom:16px; }
+}
+
+/* ---- page frame ---------------------------------------------------------- */
+/* The page's own <header> is its title row: what page this is, and when its
+   data was last read. Section nav and identity are the rail's. */
+header { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:24px 32px 16px; }
+.page-title { margin:0; font-size:24px; font-weight:700; letter-spacing:-.02em; }
+.page-sub { margin:0; color:var(--text-secondary); flex-basis:100%; }
+main.page { display:flex; flex-direction:column; gap:16px; padding:0 32px 96px; min-width:0; }
+@media (max-width: 900px) { header { padding:16px 16px 12px; } main.page { padding:0 16px 88px; } }
+
+/* ---- kit ----------------------------------------------------------------- */
+/* Buttons. .chip is the console's button class and stays the name. */
+.chip { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:32px;
+  padding:0 12px; border-radius:var(--radius-sm); border:1px solid var(--border);
+  background:var(--bg-tertiary); color:var(--text-primary); font-size:13px; font-weight:500;
+  font-family:inherit; cursor:pointer; white-space:nowrap; transition:border-color .15s, background .15s; }
+.chip:hover { background:var(--bg-hover); color:var(--text-primary); }
+.chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+.chip:disabled { opacity:.5; cursor:default; }
+.chip svg { width:16px; height:16px; flex:none; }
+a.chip { text-decoration:none; }
+.chip.primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); font-weight:600; }
+.chip.primary:hover { background:var(--accent-hover); border-color:var(--accent-hover); }
+/* A primary with nothing to do is not green at half strength, it is not
+   primary: Admin's Saves light only while there is something to save (CFOP-561). */
+.chip.primary:disabled { background:var(--bg-tertiary); border-color:var(--border); color:var(--text-secondary); opacity:1; }
+.chip.danger { border-color:#7f1d1d; color:#f87171; }
+.chip.danger:hover { border-color:var(--red); }
+.chip.lg { min-height:40px; padding:0 14px; }
+
+/* Filter tabs: one of a set is on. Buttons with aria-pressed (CFOP-94), so
+   the state is not carried by the surface alone. */
+.tabs { display:flex; flex-wrap:wrap; gap:4px; }
+.tab { min-height:36px; padding:0 12px; border-radius:var(--radius-sm); border:1px solid transparent;
+  background:transparent; color:var(--text-secondary); font-size:13px; font-family:inherit; cursor:pointer;
+  display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.tab:hover { color:var(--text-primary); background:var(--bg-row); }
+.tab:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+.tab[aria-pressed="true"], .tab[aria-selected="true"], .tab.active { color:var(--text-primary); background:var(--bg-tertiary);
+  border-color:var(--border); font-weight:500; }
+.tab .n { font-family:var(--font-mono); font-size:11px; color:var(--text-muted); }
+
+/* Badges are pills tinted from one colour: common.js badge() passes it as
+   --tone. The text is the tone lightened, which is what clears 4.5:1 on the
+   tint; the raw tone does not for red and purple. */
+.badge { --tone:#8888a0; display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px;
+  font-size:12px; font-weight:500; line-height:18px; white-space:nowrap; font-family:var(--font-ui);
+  background:color-mix(in srgb, var(--tone) 15%, transparent);
+  color:color-mix(in srgb, var(--tone) 62%, white); }
+/* A state said with a dot and a word (severity): the word carries it. */
+.sev { --tone:#8888a0; display:inline-flex; align-items:center; gap:6px; font-size:13px; white-space:nowrap;
+  color:color-mix(in srgb, var(--tone) 62%, white); }
+.sev::before { content:''; width:8px; height:8px; border-radius:50%; flex:none;
+  background:color-mix(in srgb, var(--tone) 80%, white); }
+
+/* Cards. overflow:clip rounds the corners without becoming a scroll
+   container, so a table head inside can still stick to the viewport. */
+.card { border:1px solid var(--border-subtle); border-radius:var(--radius); background:var(--bg-secondary);
+  overflow:clip; min-width:0; }
+.card-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:12px 16px;
+  border-bottom:1px solid var(--border-subtle); }
+.card-head h2, .card-head h3 { margin:0; font-size:15px; font-weight:600; }
+.card-head .end { margin-left:auto; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.card-body { padding:14px 16px; }
+
+/* Fields. A search box carries its glass as a background so the markup stays
+   one <input>. */
+select, input[type="text"], input[type="search"], input[type="number"], input[type="password"], input:not([type]), textarea {
+  background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--border);
+  border-radius:var(--radius-sm); min-height:36px; padding:0 10px; font-size:13px; }
+textarea { padding:8px 10px; }
+select:focus-visible, input:focus-visible, textarea:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
+input[type="search"] { padding-left:34px; min-width:260px; background-repeat:no-repeat; background-position:11px 50%;
+  background-size:16px 16px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2384849a' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-5-5'/%3E%3C/svg%3E"); }
+input[type="checkbox"] { width:16px; height:16px; accent-color:var(--accent); }
+.fld { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary); }
+
+/* Tables. */
+table { width:100%; border-collapse:collapse; }
+th, td { text-align:left; padding:12px 16px; border-bottom:1px solid var(--border-faint); vertical-align:top; }
+th { color:var(--text-muted); font-weight:500; font-size:12px; padding-top:10px; padding-bottom:10px;
+  border-bottom-color:var(--border-subtle); white-space:nowrap; }
+/* A table's head stays in view while its rows scroll. Named by where the
+   console's tables sit — in a list page's card, straight in an Admin panel,
+   straight in the body on Account — rather than every th, so a markdown
+   table in the chat or in a report does not get one. Opaque in each place:
+   a see-through sticky head shows the rows through the headings. */
+main.page th, .panel > table th, body > table th { position:sticky; top:var(--header-height); z-index:1; }
+main.page th { background:var(--bg-secondary); }
+.panel > table th, body > table th { background:var(--bg-primary); }
+td { font-size:13px; line-height:1.45; }
+tbody tr[tabindex] { cursor:pointer; }
+tbody tr[tabindex]:hover { background:var(--bg-row); }
+tbody tr:focus-visible { outline:2px solid var(--cyan); outline-offset:-2px; background:var(--bg-row); }
+.card > table tbody:last-child tr:last-child td { border-bottom:0; }
+td .sub { display:block; margin-top:4px; font-family:var(--font-mono); font-size:12px; color:var(--text-muted); }
+.empty { padding:32px 16px; text-align:center; color:var(--text-muted); }
+/* On a phone a wide table scrolls inside its card instead of squeezing its
+   columns to a word each. */
+@media (max-width: 900px) {
+  main.page .card:has(> table) { overflow-x:auto; }
+  main.page .card > table { min-width:820px; }
+}
+
+/* ---- the drawer ---------------------------------------------------------- */
+#backdrop { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:40; opacity:0;
+  pointer-events:none; transition:opacity .15s; }
+#backdrop.open { opacity:1; pointer-events:auto; }
+#detail { position:fixed; top:0; right:0; width:min(620px,94vw); height:100%; z-index:50;
+  background:var(--bg-secondary); border-left:1px solid var(--border); padding:20px; overflow:auto;
+  transform:translateX(100%); transition:transform .15s; box-shadow:-8px 0 24px #0008; font-size:13px; }
+#detail.open { transform:translateX(0); }
+#detail h2 { font-size:20px; font-weight:700; letter-spacing:-.02em; margin:0 0 8px; }
+#detail h3 { font-size:14px; font-weight:600; margin:16px 0 8px; }
+#detail pre { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:var(--radius-xs);
+  padding:10px; margin:0; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; }
+#detail details { margin:0 0 8px; }
+#detail summary { cursor:pointer; color:var(--text-secondary); font-weight:600; font-size:13px; user-select:none; }
+#detail summary:hover { color:var(--text-primary); }
+#detail details[open] > summary { margin-bottom:8px; }
+.kv { margin:0 0 8px; line-height:1.55; }
+.kv b { color:var(--text-secondary); font-weight:500; }
+.kv > b:first-child { display:inline-block; min-width:88px; }
+.x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px; background:none; border:0;
+  padding:0 2px; font-family:inherit; line-height:1; }
+.x:hover { color:var(--text-primary); }
+.x:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+/* Click-to-copy (CFOP-113): a quiet clipboard beside the thing it copies;
+   bindCopyIcons() in common.js swaps it for a check on success. */
+.cp { background:none; border:0; padding:2px; margin-left:4px; cursor:pointer; color:var(--text-muted);
+  vertical-align:middle; line-height:0; border-radius:var(--radius-xs); }
+.cp:hover { color:var(--text-primary); background:var(--bg-hover); }
+.cp:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
+.cp.done { color:var(--accent); }
+/* A command to take away. user-select:all so a double-click takes the line. */
+.cmd { background:var(--bg-tertiary); border:1px solid var(--border-subtle); border-radius:var(--radius-xs);
+  padding:2px 6px; user-select:all; font-size:12px; }
+
+/* Toasts sit above the Ask button, not under it. */
+#toasts { position:fixed; bottom:96px; right:28px; display:flex; flex-direction:column; gap:8px; z-index:60; }
+.toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
+  color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-xs); box-shadow:0 4px 16px #0008;
+  font-size:13px; min-width:200px; transition:opacity .2s; }
+.toast.ok { border-left-color:var(--accent); }
+.toast.err { border-left-color:var(--red); }
+
+/* A notice above the page's content: something the operator should know
+   before reading the rows. */
+#banner, .banner { padding:10px 14px; border:1px solid var(--border); border-left:3px solid var(--orange);
+  border-radius:var(--radius-xs); background:var(--bg-tertiary); font-size:13px; line-height:1.5; }
+#banner.err, .banner.err { border-left-color:var(--red); }

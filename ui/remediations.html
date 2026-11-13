@@ -5,149 +5,79 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CFOperator · Remediations</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<!-- Tokens, the rail and the shared kit: one copy, see ui/console.css. -->
+<link rel="stylesheet" href="/console.css">
 <style>
-  /* Theme tokens shared with the main page (ui/index.html) */
-  :root {
-    --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
-    --border:#2a2a3a; --border-subtle:#1e1e2e;
-    --text-primary:#e0e0e8; --text-secondary:#8888a0; --text-muted:#555566;
-    --accent:#22c55e; --accent-dim:#166534; --cyan:#06b6d4; --orange:#f59e0b; --red:#ef4444;
-    --purple:#a371f7;
-    --radius:10px; --radius-sm:6px; --header-height:56px;
-  }
-  * { box-sizing:border-box; }
-  /* Controls do not inherit the page face on their own. */
-  button, input, select, textarea { font-family:inherit; }
-  body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
-    font-family:'JetBrains Mono',monospace; font-size:14px; }  /* one face, every page (CFOP-113) */
-  header { height:var(--header-height); background:var(--bg-secondary);
-    border-bottom:1px solid var(--border); display:flex; align-items:center;
-    padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }
-  .logo { font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700;
-    color:var(--accent); letter-spacing:-0.5px; display:flex; align-items:center; gap:10px; }
-  .logo svg { width:24px; height:24px; opacity:.9; }
-  .logo .sub { color:var(--text-secondary); font-weight:500; font-size:14px; }
-  .right { margin-left:auto; display:flex; align-items:center; gap:14px; }
-  .muted { color:var(--text-secondary); font-size:12px; }
-  a { color:var(--cyan); text-decoration:none; }
-  a:hover { text-decoration:underline; }
-
-  .pipeline { display:flex; gap:10px; align-items:center; flex-wrap:wrap;
-    padding:12px 20px; border-bottom:1px solid var(--border-subtle); }
-  .pipeline .lbl { font-family:'JetBrains Mono',monospace; color:var(--text-secondary);
-    font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
-  .tiles { display:flex; gap:10px; flex-wrap:wrap; padding:14px 20px 6px; }
-  .tile { background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius);
-    padding:10px 14px; min-width:118px; }
-  .tile .n { font-size:22px; font-weight:700; font-family:'JetBrains Mono',monospace; }
-  .tile .l { color:var(--text-muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
-  .filters { padding:6px 20px 12px; display:flex; gap:8px; flex-wrap:wrap; }
-
-  .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
-    border-radius:var(--radius-sm); padding:5px 11px; cursor:pointer; font-size:13px;
-    font-family:inherit; transition:border-color .15s,background .15s; }
-  .chip:hover { border-color:var(--text-secondary); }
-  .chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
-  .chip.active { background:var(--accent-dim); border-color:var(--accent); color:#fff; }
-  /* The search box reads as a chip: same surface, same size (as on /events). */
-  .bar { padding:0 20px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  .bar input { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
-    border-radius:var(--radius-sm); padding:5px 10px; font-size:13px; min-width:260px; }
-  .bar input:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
-  a.chip { text-decoration:none; }
-  /* The handoff command (CFOP-109). user-select:all so a double-click takes the whole line. */
-  .cmd { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:6px;
-    padding:3px 7px; user-select:all; font-size:12px; }
-  .tog.on { background:var(--accent-dim); border-color:var(--accent); color:var(--text-primary); font-weight:600; }
-  .tog.drain.on { background:var(--orange); border-color:var(--orange); color:#0a0a0f; }
-
-  table { width:100%; border-collapse:collapse; }
-  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
-  th { color:var(--text-secondary); font-weight:600; font-size:11px; text-transform:uppercase;
-    letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
-  td { font-size:13px; }
-  tbody tr { cursor:pointer; }
-  tbody tr:hover { background:var(--bg-hover); }
-  tbody tr:focus-visible { outline:2px solid var(--cyan); outline-offset:-2px; background:var(--bg-hover); }
-  .mono { font-family:'JetBrains Mono',monospace; }
-  .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
-    font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
-  .rec { max-width:520px; }
+  /* Pipeline flags are switches (CFOP-696): the state is the control, not a
+     word inside a button. role="switch" + aria-checked carry it; the amber
+     track is drain, the one stage that acts on its own (it opens PRs). */
+  .switches { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:8px; }
+  .sw { display:flex; align-items:center; gap:10px; min-height:44px; padding:0 12px; border-radius:var(--radius-sm);
+    border:1px solid var(--border); background:var(--bg-rail); color:var(--text-primary); cursor:pointer; text-align:left; }
+  .sw:hover { border-color:#3a3a4e; }
+  .sw:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+  .sw .track { width:32px; height:18px; border-radius:999px; background:var(--border); position:relative; flex:none; }
+  .sw .knob { position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%; background:var(--bg-primary); transition:left .12s; }
+  .sw[aria-checked="true"] .track { background:var(--accent); }
+  .sw[aria-checked="true"].warn .track { background:var(--orange); }
+  .sw[aria-checked="true"] .knob { left:16px; }
+  .sw .swl { display:flex; flex-direction:column; min-width:0; }
+  .sw .swl .mono { font-size:13px; }
+  .sw .note { font-size:12px; color:var(--text-muted); }
+  .sw[aria-checked="true"] .note { color:var(--text-secondary); }
+  .sw[aria-checked="true"].warn .note { color:#fbbf24; }
+  @media (prefers-reduced-motion: reduce) { .sw .knob { transition:none; } }
+  #feedmsg:empty { display:none; }
+  #feedmsg { margin-top:12px; display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:13px; }
+  /* Counts by lifecycle stage, in the order a row moves through them. */
+  .lifecycle { display:flex; flex-wrap:wrap; }
+  .stage { flex:1 1 104px; display:flex; flex-direction:column; gap:2px; padding:12px 16px;
+    border-right:1px solid var(--border-subtle); }
+  .stage .n { font-size:22px; font-weight:700; color:color-mix(in srgb, var(--tone) 62%, white); }
+  .stage .n.zero { color:var(--text-dim); }
+  .stage .l { font-size:12px; color:var(--text-secondary); }
+  .cls { display:flex; flex-direction:column; gap:4px; align-items:flex-start; font-size:12px; }
+  .rec .t { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .rec { max-width:560px; }
+  .host { max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
   /* A bucket divider is a full-width row in the one table (CFOP-419), not a
      heading between tables: three tables laid out three sets of columns. */
-  tr.divider { cursor:default; }
-  tr.divider:hover { background:none; }
-  tr.divider td { padding:24px 12px 6px; border-top:1px solid var(--border); border-bottom:0;
-    font-family:'JetBrains Mono',monospace; font-size:12px; text-transform:uppercase;
-    letter-spacing:.06em; color:var(--text-secondary); }
-  tr.empty-row { cursor:default; } tr.empty-row:hover { background:none; }
-
-  #backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:40;
-    opacity:0; pointer-events:none; transition:opacity .15s; }
-  #backdrop.open { opacity:1; pointer-events:auto; }
-  #detail { position:fixed; top:0; right:0; width:min(560px,92vw); height:100%; z-index:50;
-    background:var(--bg-secondary); border-left:1px solid var(--border); padding:20px;
-    overflow:auto; transform:translateX(100%); transition:transform .15s; box-shadow:-8px 0 24px #0008; }
-  #detail.open { transform:translateX(0); }
-  /* Body font for the title (CFOP-113), as in the investigations drawer. */
-  #detail h2 { font-size:20px; }
-  #detail pre { background:var(--bg-primary); border:1px solid var(--border-subtle);
-    border-radius:var(--radius-sm); padding:10px; overflow:auto; white-space:pre-wrap;
-    word-break:break-word; font-size:12px; }
-  .kv { margin:4px 0; } .kv b { color:var(--text-secondary); font-weight:600; }
-  .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px;
-    background:none; border:0; padding:0 2px; font-family:inherit; line-height:1; }
-  .x:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
-  .empty { padding:40px; text-align:center; color:var(--text-muted); }
-  select, input[type="number"], input[type="text"], input:not([type]) {
-    background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border);
-    border-radius:var(--radius-sm); padding:5px 8px; font-family:'JetBrains Mono',monospace;
-    font-size:13px; outline:none; }
-  select:focus, input:focus { border-color:var(--accent); }
-  .actform { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:var(--radius-sm);
+  tr.divider td { padding:20px 16px 8px; border-top:1px solid var(--border-subtle); border-bottom-color:var(--border-subtle);
+    font-size:12px; font-weight:600; color:var(--text-secondary); }
+  #detail { width:min(560px,92vw); }
+  .kv { margin:4px 0; }
+  .actform { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:var(--radius-xs);
     padding:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0 12px; }
   .actform label { color:var(--text-secondary); font-size:12px; }
-  /* Click-to-copy (CFOP-113), same icon as the investigations drawer. */
-  .cp { background:none; border:0; padding:2px; margin-left:4px; cursor:pointer; color:var(--text-muted);
-    vertical-align:middle; line-height:0; border-radius:var(--radius-sm); }
-  .cp:hover { color:var(--text-primary); background:var(--bg-hover); }
-  .cp:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
-  .cp.done { color:var(--accent); }
-  #toasts { position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:60; }
-  .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
-    color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-sm); box-shadow:0 4px 16px #0008;
-    font-size:13px; min-width:200px; transition:opacity .2s; }
-  .toast.ok { border-left-color:var(--accent); }
-  .toast.err { border-left-color:var(--red); }
 </style>
 </head>
 <body>
 <header>
-  <a href="/" class="logo" style="text-decoration:none" title="Back to console">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
-    </svg>
-    CFOperator <span class="sub">/ Remediations</span>
-  </a>
-  <div class="right">
-    <span class="muted" id="updated"></span>
-  </div>
-  <!-- Section nav, identity and logout — see ui/nav.js -->
+  <h1 class="page-title">Remediations</h1>
+  <span class="muted" id="updated"></span>
+  <!-- The rail: section nav, status, identity and logout — see ui/nav.js -->
   <div id="cfop-nav"></div>
 </header>
 <script src="/nav.js" defer></script>
 
-<div class="pipeline" id="pipeline">
-  <span class="lbl">Pipeline</span>
-  <span id="flags"></span>
-  <button class="chip" onclick="runFeed()">⟳ Run feed-summary</button>
-  <span id="feedmsg" class="muted"></span>
-</div>
-<div class="tiles" id="tiles"></div>
-<div class="filters" id="filters"></div>
-<div class="bar">
-  <input type="search" id="f-q" aria-label="Search remediations" placeholder="search recommendation, host, class, status, model, #id" oninput="searchInput(this.value)">
-</div>
+<main class="page">
+<section class="card" id="pipeline" aria-label="Pipeline controls">
+  <div class="card-head">
+    <h2>Pipeline</h2>
+    <span class="muted" id="pipe-summary"></span>
+    <span class="end"><button type="button" class="chip lg" onclick="runFeed()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4l12 8-12 8z"/></svg>Run feed-summary</button></span>
+  </div>
+  <div class="card-body">
+    <div class="switches" id="flags"></div>
+    <div id="feedmsg" role="status"></div>
+  </div>
+</section>
+<section class="card lifecycle" id="tiles" aria-label="Lifecycle"></section>
+<section class="card" aria-label="Remediation list">
+  <div class="card-head">
+    <div class="tabs" id="filters" aria-label="Status"></div>
+    <span class="end"><input type="search" id="f-q" aria-label="Search remediations" placeholder="Recommendation, host, class, ticket, #id" oninput="searchInput(this.value)"></span>
+  </div>
 <!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit.
      One table with three buckets (CFOP-419): active, filed to the tracker (CFOP-170:
      noted, not a line item), closed. One header, one column layout; each bucket is a
@@ -155,20 +85,22 @@
      bucket's rows tbody in place for render(). -->
 <table>
   <thead><tr>
-    <th data-sort="id">ID</th><th data-sort="status">Status</th><th data-sort="class">Class</th><th data-sort="risk">Risk</th><th data-sort="conf">Conf</th>
-    <th data-sort="host">Host</th><th data-sort="llm">LLM</th><th data-sort="rec">Recommendation</th><th data-sort="created">Created</th><th>PR</th>
+    <th data-sort="id">ID</th><th data-sort="status">Status</th><th data-sort="class">Class · risk</th>
+    <th data-sort="rec">Recommendation</th><th data-sort="host">Host</th><th>Ticket</th><th data-sort="created">Created</th>
   </tr></thead>
   <tbody id="rows"></tbody>
-  <tbody id="empty" hidden><tr class="empty-row"><td colspan="10" class="empty">No open remediations.</td></tr></tbody>
+  <tbody id="empty" hidden><tr class="empty-row"><td colspan="7" class="empty">No open remediations.</td></tr></tbody>
   <tbody id="filed-section" hidden>
-    <tr class="divider"><td colspan="10">Filed to tracker <span id="filed-count" class="muted"></span></td></tr>
+    <tr class="divider"><td colspan="7">Filed to tracker <span id="filed-count" class="muted"></span></td></tr>
   </tbody>
   <tbody id="rows-filed"></tbody>
   <tbody id="done-section" hidden>
-    <tr class="divider"><td colspan="10">Closed <span id="done-count" class="muted"></span></td></tr>
+    <tr class="divider"><td colspan="7">Closed <span id="done-count" class="muted"></span></td></tr>
   </tbody>
   <tbody id="rows-done"></tbody>
 </table>
+</section>
+</main>
 <div id="backdrop" onclick="closeDetail()" aria-hidden="true"></div>
 <!-- A dialog (CFOP-94): inert while closed so its off-screen controls are not in the tab
      order; detail() lifts it, closeDetail() restores it. Labelled by the h2 detail() paints. -->
@@ -248,21 +180,28 @@ function paint(){
   render(KIT.sort(rows));
 }
 
+// The lifecycle strip: every stage in the order a row moves through it, then
+// the two ways out that are not "resolved". A zero is dim, so the eye lands
+// on where the rows actually are.
+const STAGES = [['queued','Queued'],['claimed','Claimed'],['executing','Executing'],['pr-open','PR open'],
+  ['verifying','Verifying'],['needs-human','Needs human'],['filed','Filed to tracker'],['resolved','Resolved'],
+  ['failed','Failed'],['rejected','Rejected']];
 function tiles(rows){
   const c = {}; STATUS.forEach(s=>c[s]=0); rows.forEach(r=>c[r.status]=(c[r.status]||0)+1);
-  const show = ['queued','needs-human','filed','pr-open','resolved','rejected','failed'];
-  document.getElementById('tiles').innerHTML = show.map(s=>
-    `<div class="tile"><div class="n" style="color:${color(SC[s])}">${c[s]||0}</div><div class="l">${s}</div></div>`).join('');
+  document.getElementById('tiles').innerHTML = STAGES.map(([s,label])=>
+    `<div class="stage" style="--tone:var(${SC[s]})"><span class="n${c[s]?'':' zero'}">${c[s]||0}</span><span class="l">${label}</span></div>`).join('');
+  // A tab per status that has rows — plus the one in force, so a filter whose
+  // last row just left can still be seen and cleared.
   document.getElementById('filters').innerHTML =
-    chip('', `all (${rows.length})`) +
-    STATUS.map(s=>chip(s, `${s} (${c[s]||0})`)).join('');
+    chip('', 'All', rows.length) +
+    STAGES.filter(([s])=>c[s]||filter===s).map(([s,label])=>chip(s, label, c[s]||0)).join('');
 }
-// Filter chips are buttons with aria-pressed (CFOP-94): the active filter is
+// Filter tabs are buttons with aria-pressed (CFOP-94): the active filter is
 // not signalled by colour alone, and a button is reachable by Tab where the
 // span it replaced was not.
-function chip(value, label){
+function chip(value, label, n){
   const on=filter===value;
-  return `<button type="button" class="chip ${on?'active':''}" aria-pressed="${on}" onclick="setFilter('${value}')">${label}</button>`;
+  return `<button type="button" class="tab" aria-pressed="${on}" onclick="setFilter('${value}')">${label}<span class="n">${n}</span></button>`;
 }
 // Rows are focusable rather than links (CFOP-94): a fragment link would push a
 // history entry per row, and openFromHash below has no re-entry guard, so a
@@ -281,8 +220,8 @@ function refocusRow(id){ if(!id) return; const el=document.getElementById(id); i
 const TERMINAL = new Set(['resolved', 'rejected']);
 function rowHtml(r){
   const p = r.payload||{}; const rec = p.recommendation || p.title || '';
-  // Reporting LLM only — absence means the row predates the tag, not "unknown".
-  const llm = p.provider ? `<span class="mono muted">${esc(p.provider)}</span>` : '—';
+  // The reporting LLM rides under the recommendation; absence means the row
+  // predates the tag, not "unknown", so nothing is drawn for it.
   // pr_url is a PR this row tracks; named_pr_url one its recommendation names
   // (CFOP-116); a node-action also has its change-record PR, whose merge
   // authorises shell on a host (CFOP-139). That last one is what an operator
@@ -302,17 +241,15 @@ function rowHtml(r){
   const trHref = safeUrl(r.tracker_url);
   const tr = trHref ? `<a href="${esc(trHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="the issue-tracker item this row was handed to">${esc(r.tracker_key||'issue')} ↗</a>` : '';
   const prCell = tr ? (pr==='—' ? tr : `${pr} · ${tr}`) : pr;
+  const under = [p.provider?esc(p.provider):'', r.confidence==null?'':'conf '+esc(r.confidence)].filter(Boolean).join(' · ');
   return `<tr id="row-${r.id}" tabindex="0" onclick="detail(${r.id})" onkeydown="rowKey(event,${r.id})">
-    <td class="mono">#${r.id}</td>
+    <td class="mono muted">#${r.id}</td>
     <td>${badge(r.status, SC[r.status]||'--text-muted')}</td>
-    <td>${esc(r.remediation_class)}</td>
-    <td>${badge(r.risk, RC[r.risk]||'--text-muted')}</td>
-    <td class="mono">${r.confidence==null?'—':r.confidence}</td>
-    <td>${esc(r.host_id)}</td>
-    <td>${llm}</td>
-    <td class="rec">${esc(String(rec).slice(0,160))}</td>
-    <td class="muted">${fmtTs(r.created_at)}</td>
-    <td>${prCell}</td></tr>`;
+    <td><span class="cls"><span class="mono">${esc(r.remediation_class)}</span>${badge((r.risk||'—')+' risk', RC[r.risk]||'--text-muted')}</span></td>
+    <td class="rec"><span class="t">${esc(String(rec).slice(0,240))}</span>${under?`<span class="sub">${under}</span>`:''}</td>
+    <td class="mono host" title="${esc(r.host_id)}">${esc(r.host_id)}</td>
+    <td class="mono" style="white-space:nowrap">${prCell}</td>
+    <td class="mono muted">${fmtTs(r.created_at)}</td></tr>`;
 }
 // Three buckets (CFOP-170): active, filed, closed. A filed row was handed to
 // the issue tracker — it is noted here with its key, and it is not a line item
@@ -381,25 +318,25 @@ async function detail(id){
     <h2 id="detail-title" style="margin:0 0 8px">Remediation #${r.id}</h2>
     <div style="margin:0 0 8px;display:flex;gap:8px;flex-wrap:wrap">
       ${r.remediation_class==='manual'
-        ? `<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify first</button>`
+        ? `<button class="chip" onclick="showReclassify(${r.id})">Reclassify first</button>`
         : safeUrl(r.pr_url)
-        ? `<a class="chip" href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">↗ Review PR</a>`
+        ? `<a class="chip" href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">Review PR ↗</a>`
         : awaitingRecordMerge(r)
         ? changeRecordChip(r)
-        : `<button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>`}
+        : `<button class="chip" onclick="approve(${r.id})">Approve → queue</button>`}
       ${!awaitingRecordMerge(r)?changeRecordChip(r):''}
-      ${!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)?`<a class="chip" href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">↗ Named PR</a>`:''}
+      ${!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)?`<a class="chip" href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">Named PR ↗</a>`:''}
       ${trackerChip(r)}
-      <button class="chip" onclick="showResolve(${r.id})">✔ Resolve</button>
-      <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
-      ${r.remediation_class==='manual'?'':`<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify</button>`}
-      ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})">🔎 Investigation #${r.investigation_id}</button>`:''}
-      <a class="chip" href="/?remediation=${Number(r.id)}" title="open the console chat on this row">💬 Ask console</a>
+      <button class="chip" onclick="showResolve(${r.id})">Resolve</button>
+      <button class="chip" onclick="showReject(${r.id})">Reject</button>
+      ${r.remediation_class==='manual'?'':`<button class="chip" onclick="showReclassify(${r.id})">Reclassify</button>`}
+      ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})">Investigation #${r.investigation_id}</button>`:''}
+      <a class="chip" href="/?remediation=${Number(r.id)}" title="open the console chat on this row">Ask about this</a>
     </div>
-    ${r.remediation_class==='manual'?`<div class="muted" style="margin:0 0 8px">manual = human-only work: the executor has nothing to run. Reclassify it (gitops-patch / k8s-action / node-action) for the executor, or do it by hand and ✔ Resolve.</div>`:''}
+    ${r.remediation_class==='manual'?`<div class="muted" style="margin:0 0 8px">manual = human-only work: the executor has nothing to run. Reclassify it (gitops-patch / k8s-action / node-action) for the executor, or do it by hand and Resolve.</div>`:''}
     ${r.status===FILED?`<div class="muted" style="margin:0 0 8px">${trackerCopy(r)}</div>`:''}
     ${r.remediation_class!=='manual'&&safeUrl(r.pr_url)&&!TERMINAL.has(r.status)?`<div class="muted" style="margin:0 0 8px">a PR is open for this row: merge it and the reconciler resolves the row; close it and the row is rejected. Approve is off — the executor would open a second PR.</div>`:''}
-    ${r.remediation_class!=='manual'&&!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)&&!TERMINAL.has(r.status)?`<div class="muted" style="margin:0 0 8px">the recommendation names a PR in this repo that no row tracks. If that PR is the fix, merge it and ✔ Resolve; Approve would have the executor open another.</div>`:''}
+    ${r.remediation_class!=='manual'&&!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)&&!TERMINAL.has(r.status)?`<div class="muted" style="margin:0 0 8px">the recommendation names a PR in this repo that no row tracks. If that PR is the fix, merge it and Resolve; Approve would have the executor open another.</div>`:''}
     <div id="actionform"></div>
     <div class="kv">${badge(r.status,SC[r.status]||'--text-muted')} ${badge(r.risk,RC[r.risk]||'--text-muted')}
       <span class="muted">${esc(r.remediation_class)} · conf ${r.confidence==null?'—':r.confidence}</span></div>
@@ -551,7 +488,7 @@ function trackerChip(r){
   return href?`<a class="chip" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="the issue this row was handed to">↗ ${esc(r.tracker_key||'Issue')}</a>`:'';
 }
 function trackerCopy(r){
-  return `handed off to the issue tracker as ${esc(r.tracker_key||'an issue')}: groom or discard it there and this row follows (done → resolved, cancelled → rejected). ✔ Resolve here closes the issue; Approve hands the row to the executor and the issue is told.`;
+  return `handed off to the issue tracker as ${esc(r.tracker_key||'an issue')}: groom or discard it there and this row follows (done → resolved, cancelled → rejected). Resolve here closes the issue; Approve hands the row to the executor and the issue is told.`;
 }
 function trackerHtml(r){
   const t=trackerInfo(r); if(!t) return '';
@@ -560,7 +497,7 @@ function trackerHtml(r){
   return `<div class="kv"><b>tracker</b> `+
     (href?`<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(key||href)}</a>`:esc(key||'—'))+
     (t.synced_status?` <span class="muted">· synced ${esc(t.synced_status)}${t.synced_at?' at '+fmtTs(t.synced_at,{seconds:true}):''}</span>`:'')+
-    (t.error?`<br><span style="color:var(--orange)">last tracker error: ${esc(t.error)}${t.error_count?' ('+Number(t.error_count)+'×)':''}</span>`:'')+
+    (t.error?`<br><span style="color:#fbbf24">last tracker error: ${esc(t.error)}${t.error_count?' ('+Number(t.error_count)+'×)':''}</span>`:'')+
     `</div>`;
 }
 
@@ -587,8 +524,15 @@ function searchInput(v){ Q=String(v||'').trim(); paint(); }
 const FLAG_LABEL = {queue_feed:'feed',queue_drain:'drain',queue_reap:'reap',queue_verify:'verify',queue_tracker:'tracker',queue_reverify:'re-verify',node_action_enabled:'node-action',model_dedupe:'model-dedupe',model_dedupe_fold:'model-folds'};
 async function loadFlags(){
   let f; try{ f = await (await fetch('/api/remediation/flags')).json(); }catch(e){ return; }
-  document.getElementById('flags').innerHTML = Object.keys(FLAG_LABEL).map(k=>
-    `<button class="chip tog ${k==='queue_drain'?'drain':''} ${f[k]?'on':''}" onclick="toggleFlag('${k}',${!f[k]})">${FLAG_LABEL[k]}: ${f[k]?'on':'off'}</button>`).join(' ');
+  const keys = Object.keys(FLAG_LABEL), on = keys.filter(k=>f[k]).length;
+  document.getElementById('flags').innerHTML = keys.map(k=>{
+    const warn = k==='queue_drain';
+    return `<button type="button" role="switch" aria-checked="${f[k]?'true':'false'}" class="sw${warn?' warn':''}" onclick="toggleFlag('${k}',${!f[k]})">
+      <span class="track"><span class="knob"></span></span>
+      <span class="swl"><span class="mono">${FLAG_LABEL[k]}</span><span class="note">${f[k]?(warn?'draining queue':'on'):'off'}</span></span></button>`;
+  }).join('');
+  const sum = document.getElementById('pipe-summary');
+  if(sum) sum.textContent = `${on} of ${keys.length} stages on` + (f.queue_drain?' · draining':'');
 }
 function toggleFlag(name,value){
   if(name==='queue_drain' && value){ confirmDrain(); return; }  // inline confirm, no popup
@@ -600,20 +544,20 @@ function toggleFlag(name,value){
 // ticks (bounded per tick). Worth a sentence before it happens.
 function confirmTracker(){
   document.getElementById('feedmsg').innerHTML =
-    `<span style="color:var(--orange)">Enable tracker — every needs-human row without a PR is filed to the issue tracker and moves to "filed"; rows with a PR get an issue too.</span> ` +
-    `<button class="chip" onclick="setFlag('queue_tracker',true);clearMsg()">Yes, enable</button> ` +
+    `<span style="color:#fbbf24">Enable tracker — every needs-human row without a PR is filed to the issue tracker and moves to "filed"; rows with a PR get an issue too.</span> ` +
+    `<button class="chip primary" onclick="setFlag('queue_tracker',true);clearMsg()">Yes, enable</button> ` +
     `<button class="chip" onclick="clearMsg()">Cancel</button>`;
 }
 function confirmDrain(){
   document.getElementById('feedmsg').innerHTML =
-    `<span style="color:var(--orange)">Enable drain — agent will open PRs (you still merge).</span> ` +
-    `<button class="chip" onclick="setFlag('queue_drain',true);clearMsg()">Yes, enable</button> ` +
+    `<span style="color:#fbbf24">Enable drain — agent will open PRs (you still merge).</span> ` +
+    `<button class="chip primary" onclick="setFlag('queue_drain',true);clearMsg()">Yes, enable</button> ` +
     `<button class="chip" onclick="clearMsg()">Cancel</button>`;
 }
 function confirmNodeAction(){
   document.getElementById('feedmsg').innerHTML =
-    `<span style="color:var(--orange)">Enable node-action — approved change records will run allowlisted commands over SSH.</span> ` +
-    `<button class="chip" onclick="setFlag('node_action_enabled',true);clearMsg()">Yes, enable</button> ` +
+    `<span style="color:#fbbf24">Enable node-action — approved change records will run allowlisted commands over SSH.</span> ` +
+    `<button class="chip primary" onclick="setFlag('node_action_enabled',true);clearMsg()">Yes, enable</button> ` +
     `<button class="chip" onclick="clearMsg()">Cancel</button>`;
 }
 function clearMsg(){ document.getElementById('feedmsg').textContent=''; }

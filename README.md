@@ -135,7 +135,9 @@ CFOperator agent (Docker container)
 │                            (one timescale_query call, so it has nothing to
 │                            call without TIMESCALE_PASSWORD)
 │
-└── Console (:8083; six pages behind one shared header, dark theme, JetBrains Mono)
+└── Console (:8083; seven pages inside one shared rail, dark theme)
+    ├── Inbox: what is waiting on a human (untriaged needs-action
+    │   investigations, rows filed to the tracker, the latest sweep)
     ├── Chat: HTTP polling of /api/chat, /api/qa and /api/health (Waitress is
     │   WSGI, so there is no WebSocket; the /ws route was removed in CFOP-91),
     │   collapsible sidebar (skills, chat history), sweep findings with
@@ -502,7 +504,7 @@ make all            # all platforms
 | `event_runtime/http_actions.py` | `HTTPInvestigateActionHandler` + completion endpoint auth/validation helpers |
 | `auth/` | Console users, roles, and API tokens: models, store, routes, bootstrap ([docs](docs/auth.md)) |
 | `web_auth.py` | Console gate on `:8083`: session login, bearer verification, `require_role` |
-| `ui/` | The console: six static pages behind one header (`ui/nav.js`), no build step, third-party code vendored under `ui/vendor/` |
+| `ui/` | The console: seven static pages inside one rail (`ui/nav.js`) and one stylesheet (`ui/console.css`), no build step, third-party code vendored under `ui/vendor/` |
 | `ui/index.html` | Chat page (dark theme, sidebar layout) |
 | `ui/account.html` | Self-service password and own API tokens |
 | `ui/admin.html` | Admin panel: users, tokens, LLM, git repos, node-action allowlist, MCP connectors |
