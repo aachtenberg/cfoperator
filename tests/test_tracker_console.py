@@ -153,7 +153,7 @@ def test_page_wiring_for_the_hand_off():
     assert len(tables) == 1 and page.count("<thead>") == 1, "the buckets must share one table and one header"
     for tbody in ("rows", "rows-filed", "rows-done", "filed-section", "done-section", "empty"):
         assert f'<tbody id="{tbody}"' in tables[0], f"#{tbody} is not a tbody of the one table"
-    assert "'filed'" in re.search(r"const show = \[.*?\];", src).group(0)
+    assert "'filed'" in re.search(r"const STAGES = \[.*?\];", src, re.S).group(0)
 
 
 def test_remediation_row_dict_exposes_the_tracker_fields_and_tolerates_no_result():

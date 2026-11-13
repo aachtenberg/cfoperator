@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFOperator · Inbox</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<!-- Tokens, the rail and the shared kit: one copy, see ui/console.css. -->
+<link rel="stylesheet" href="/console.css">
+<style>
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; }
+  .kpi { display:flex; flex-direction:column; gap:6px; padding:16px; border:1px solid var(--border-subtle);
+    border-radius:var(--radius); background:var(--bg-secondary); color:var(--text-primary); }
+  .kpi:hover { color:var(--text-primary); border-color:var(--border); }
+  .kpi:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+  .kpi .l { font-size:13px; color:var(--text-secondary); }
+  .kpi .v { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+  .kpi .n { font-size:28px; font-weight:700; letter-spacing:-.02em; }
+  /* The remediation pipeline, read-only: which stages are on. The switches
+     are on /remediations; this is the glance. */
+  .pipe { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:12px 16px; }
+  .pipe h2 { margin:0 6px 0 0; font-size:13px; font-weight:600; }
+  .stage { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:var(--radius-xs);
+    background:var(--bg-tertiary); border:1px solid var(--border); font-family:var(--font-mono); font-size:13px;
+    color:var(--text-secondary); }
+  .stage i { width:7px; height:7px; border-radius:50%; background:var(--text-dim); }
+  .stage.on { color:var(--text-primary); } .stage.on i { background:var(--accent); }
+  .stage.on.warn i { background:var(--orange); }
+  .pipe .end { margin-left:auto; font-size:13px; }
+  .cols { display:flex; flex-wrap:wrap; gap:24px; align-items:flex-start; }
+  .cols > .queue { flex:2 1 560px; }
+  .cols > .side { flex:1 1 340px; display:flex; flex-direction:column; gap:24px; min-width:0; }
+  .q { display:grid; grid-template-columns:56px minmax(0,1fr) auto; gap:16px; align-items:center;
+    padding:12px 16px; border-bottom:1px solid var(--border-faint); }
+  .q:last-child { border-bottom:0; }
+  .q:hover { background:var(--bg-row); }
+  .q .id { font-size:12px; color:var(--text-muted); }
+  .q .what { display:flex; flex-direction:column; gap:4px; min-width:0; }
+  .q .what a { color:var(--text-primary); font-weight:500; line-height:1.4; overflow-wrap:anywhere; }
+  .q .what a:hover { color:var(--link-hover); }
+  .q .what .sub { font-family:var(--font-mono); font-size:12px; color:var(--text-muted); }
+  .q .do { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  @media (max-width: 640px) { .q { grid-template-columns:minmax(0,1fr); gap:8px; } .q .do { justify-content:flex-start; } }
+  .filed { display:flex; flex-direction:column; gap:10px; padding:14px 16px; border-bottom:1px solid var(--border-faint); }
+  .filed:last-child { border-bottom:0; }
+  .filed .top { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .filed .top .id { font-size:12px; color:var(--text-muted); }
+  .filed .top .tk { margin-left:auto; font-size:12px; }
+  .filed p { margin:0; line-height:1.5; color:#d4d4de; display:-webkit-box; -webkit-line-clamp:4;
+    -webkit-box-orient:vertical; overflow:hidden; }
+  .sweep ul { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:10px;
+    color:#d4d4de; line-height:1.45; }
+  .sweep li { display:flex; gap:10px; }
+  .sweep li::before { content:''; width:6px; height:6px; margin-top:8px; border-radius:50%; flex:none;
+    background:color-mix(in srgb, var(--tone, var(--cyan)) 80%, white); }
+  .sweep .card-body { display:flex; flex-direction:column; gap:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 class="page-title">Inbox</h1>
+  <span class="muted" id="updated"></span>
+  <p class="page-sub">Everything waiting on a human, newest first.</p>
+  <!-- The rail: section nav, status, identity and logout — see ui/nav.js -->
+  <div id="cfop-nav"></div>
+</header>
+<script src="/nav.js" defer></script>
+<main class="page">
+<div id="banner" role="status" hidden></div>
+<section class="kpis" id="kpis" aria-label="Summary"></section>
+<section class="card pipe" id="pipe" aria-label="Pipeline" hidden></section>
+<div class="cols">
+  <section class="card queue" aria-label="Needs action">
+    <div class="card-head">
+      <h2>Needs action</h2><span id="queue-count"></span>
+      <span class="end"><a class="chip" href="/investigations">Open all</a></span>
+    </div>
+    <div id="queue"></div>
+    <div id="queue-empty" class="empty" hidden>Nothing is waiting on you.</div>
+  </section>
+  <div class="side">
+    <section class="card" id="filed-card" aria-label="Filed to tracker" hidden>
+      <div class="card-head"><h2>Filed to tracker</h2><span id="filed-count"></span></div>
+      <div id="filed"></div>
+    </section>
+    <section class="card sweep" id="sweep-card" aria-label="Latest sweep" hidden>
+      <div class="card-head"><h2>Latest sweep</h2><span class="mono muted" id="sweep-meta"></span><span class="end" id="sweep-count"></span></div>
+      <div class="card-body"><ul id="sweep"></ul><a href="/events?source=cfoperator-sweep" style="font-size:13px">View in Events</a></div>
+    </section>
+  </div>
+</div>
+</main>
+<div id="toasts"></div>
+
+<!-- esc/badge/fmtTs/toast — one copy, see ui/common.js. Not deferred: the script below
+     calls them. -->
+<script src="/common.js"></script>
+<script>
+// Inbox (CFOP-696): what is waiting on a person, on one page. Nothing here
+// has an API of its own — it is the investigations list, the remediations
+// list, the pipeline flags and the last sweep, read the way their own pages
+// read them and cut down to the rows that want a decision.
+//
+// "Needs action" is CFOP.needsAction (nav.js): outcome needs_action and not
+// yet triaged. The rail's count is the same function over the same request,
+// so the number beside "Inbox" is the length of this queue.
+const LIMIT=80;               // the investigations page's window; the tiles count within it
+const QUEUE_MAX=25;           // the page is a queue, not the archive — "Open all" is the archive
+const OC={resolved:'--accent',needs_action:'--orange',monitoring:'--cyan',escalated:'--red',failed:'--red'};
+const SC={queued:'--cyan',claimed:'--orange',executing:'--orange','pr-open':'--purple',verifying:'--cyan',
+  resolved:'--accent',failed:'--red','needs-human':'--orange',rejected:'--text-muted',
+  // filed is quiet on purpose (CFOP-170): noted, not asking for attention.
+  filed:'--text-secondary'};
+const RC={low:'--accent',med:'--orange',medium:'--orange',high:'--red'};
+const SEV={critical:'--red',warning:'--orange',info:'--cyan'};
+const FLAG_LABEL={queue_feed:'feed',queue_drain:'drain',queue_reap:'reap',queue_verify:'verify',queue_tracker:'tracker',
+  queue_reverify:'re-verify',node_action_enabled:'node-action',model_dedupe:'model-dedupe',model_dedupe_fold:'model-folds'};
+let INV=[], REMS={}, REMID={}, FILED=[], FLAGS=null, SWEEP=null, ADMIN=false, LAST_SIG=null;
+
+// LLM- and tracker-adjacent URLs: only http(s) reaches an href (same posture
+// as the list pages).
+function safeUrl(u){ const s=String(u==null?'':u).trim(); if(!s) return '';
+  try{ const p=new URL(s, window.location.href);
+  return (p.protocol==='http:'||p.protocol==='https:')?p.href:''; }catch(e){ return ''; } }
+
+async function getJson(url){
+  const res=await fetch(url);
+  if(!res.ok){ const e=new Error(res.status===401?'Signed out — sign in again.':'HTTP '+res.status); e.status=res.status; throw e; }
+  return res.json();
+}
+function setBanner(msg){ const b=document.getElementById('banner'); b.hidden=!msg; b.className=msg?'err':''; b.textContent=msg||''; }
+
+async function load(){
+  // A hidden tab has nobody looking; the visibilitychange hook below catches up.
+  if(document.hidden) return;
+  // The investigations list is the page; without it there is nothing to show
+  // and the banner says so. The other three are enhancement: a failed one
+  // leaves its card as it was.
+  try{ INV=(await getJson('/api/investigations?limit='+LIMIT)).investigations||[]; setBanner(''); }
+  catch(e){ setBanner('Could not read investigations ('+e.message+').'); return; }
+  await Promise.all([
+    getJson('/api/remediations?limit=500').then(d=>{
+      const rows=d.remediations||[]; REMS={}; REMID={};
+      // Newest first, so first-seen wins (as on the investigations page).
+      rows.forEach(r=>{ if(r.investigation_id!=null && !(r.investigation_id in REMS)) REMS[r.investigation_id]=r; REMID[r.id]=r; });
+      FILED=rows.filter(r=>r.status==='filed');
+    }).catch(()=>{}),
+    getJson('/api/remediation/flags').then(f=>{ FLAGS=f; }).catch(()=>{}),
+    getJson('/api/sweep-reports?limit=1').then(d=>{ SWEEP=(d.reports||[])[0]||null; }).catch(()=>{})
+  ]);
+  // A poll that brought nothing new does not rebuild the page under the pointer (CFOP-95).
+  const sig=JSON.stringify([INV.map(r=>[r.id,r.outcome,r.triage_action,r.trigger,r.provider,r.remediation_id]),
+    Object.keys(REMID).map(k=>[k,REMID[k].status,REMID[k].tracker_key]), FLAGS, SWEEP&&[SWEEP.id,SWEEP.finding_count], ADMIN]);
+  if(sig!==LAST_SIG){ LAST_SIG=sig; paint(); } else refreshAges();
+  document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
+}
+
+function queue(){ return (window.CFOP&&window.CFOP.needsAction)?window.CFOP.needsAction(INV):INV.filter(r=>r.outcome==='needs_action'&&!r.triage_action); }
+function count(n, varname){ return n?badge(String(n), varname):''; }
+function kpi(label, n, tag, varname, href){
+  return `<a class="kpi" href="${href}"><span class="l">${esc(label)}</span>
+    <span class="v"><span class="n">${n}</span>${badge(tag, n?varname:'--text-muted')}</span></a>`;
+}
+function linkedRem(r){ return REMS[r.id] || (r.remediation_id ? (REMID[r.remediation_id]||{id:r.remediation_id,status:''}) : null); }
+function remBadge(r){
+  const m=linkedRem(r);
+  if(!m) return badge('no remediation','--text-muted');
+  return `<a href="/remediations#${Number(m.id)}" title="open the remediation">${badge('#'+m.id+(m.status?' '+m.status:''), SC[m.status]||'--text-muted')}</a>`;
+}
+
+function paint(){
+  const by=o=>INV.filter(r=>r.outcome===o).length, q=queue();
+  document.getElementById('kpis').innerHTML=
+    kpi('Investigations needing action', q.length, 'needs action', '--orange', '/investigations')+
+    kpi('Escalated', by('escalated')+by('escalate'), 'escalated', '--red', '/investigations')+
+    kpi('Monitoring', by('monitoring'), 'watching', '--cyan', '/investigations')+
+    kpi('Failed investigation runs', by('failed'), 'failed', '--red', '/investigations')+
+    kpi('Remediations filed', FILED.length, 'in tracker', '--text-secondary', '/remediations');
+
+  const pipe=document.getElementById('pipe');
+  pipe.hidden=!FLAGS;
+  if(FLAGS) pipe.innerHTML='<h2>Pipeline</h2>'+Object.keys(FLAG_LABEL).map(k=>{
+    const on=!!FLAGS[k];
+    // The word rides along for anyone not seeing the dot.
+    return `<span class="stage${on?' on':''}${on&&k==='queue_drain'?' warn':''}"><i aria-hidden="true"></i>${FLAG_LABEL[k]}<span class="sr-only"> ${on?'on':'off'}</span></span>`;
+  }).join('')+'<a class="end" href="/remediations">Manage pipeline</a>';
+
+  document.getElementById('queue-count').innerHTML=count(q.length,'--orange');
+  document.getElementById('queue-empty').hidden=q.length>0;
+  document.getElementById('queue').innerHTML=q.slice(0,QUEUE_MAX).map(r=>`
+    <div class="q" id="q-${Number(r.id)}">
+      <span class="id mono">#${Number(r.id)}</span>
+      <div class="what"><a href="/investigations#${Number(r.id)}">${esc(String(r.trigger||'').slice(0,160))||'(no trigger recorded)'}</a>
+        <span class="sub">${[r.provider?esc(r.provider):'', fmtTs(r.started_at)].filter(Boolean).join(' · ')}</span></div>
+      <div class="do">${remBadge(r)}${ADMIN?`<button type="button" class="chip" data-ack="${Number(r.id)}" aria-label="Acknowledge investigation #${Number(r.id)}">Ack</button>`:''}</div>
+    </div>`).join('')+
+    (q.length>QUEUE_MAX?`<div class="empty"><a href="/investigations">${q.length-QUEUE_MAX} more in Investigations</a></div>`:'');
+
+  document.getElementById('filed-card').hidden=!FILED.length;
+  document.getElementById('filed-count').innerHTML=count(FILED.length,'--text-secondary');
+  document.getElementById('filed').innerHTML=FILED.slice(0,6).map(r=>{
+    const p=r.payload||{}, href=safeUrl(r.tracker_url);
+    return `<div class="filed"><div class="top"><a class="id mono" href="/remediations#${Number(r.id)}">#${Number(r.id)}</a>
+        ${r.risk?badge(r.risk+' risk', RC[r.risk]||'--text-muted'):''}${badge(r.remediation_class||'—','--text-muted')}
+        ${href?`<a class="tk mono" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(r.tracker_key||'issue')} ↗</a>`:''}</div>
+      <p>${esc(p.recommendation||p.title||'')}</p></div>`;
+  }).join('');
+
+  const card=document.getElementById('sweep-card');
+  card.hidden=!SWEEP;
+  if(SWEEP){
+    const f=SWEEP.findings||[], n=SWEEP.finding_count!=null?SWEEP.finding_count:f.length;
+    document.getElementById('sweep-meta').innerHTML='#'+esc(SWEEP.id)+' · '+fmtTs(SWEEP.swept_at);
+    document.getElementById('sweep-count').innerHTML=badge(n+' finding'+(n===1?'':'s'), n?(SEV[SWEEP.severity]||'--cyan'):'--text-muted');
+    document.getElementById('sweep').innerHTML=f.length
+      ? f.slice(0,5).map(x=>`<li style="--tone:var(${SEV[x.severity]||'--cyan'})">${esc(x.finding||'')}</li>`).join('')
+      : '<li class="muted">The sweep found nothing.</li>';
+  }
+}
+
+// Ack records the operator's verdict (triage_action) and takes the row out of
+// the queue; the agent's own outcome is left alone, as on the investigations
+// page. One delegated listener: the queue repaints by innerHTML.
+async function ack(id, btn){
+  if(btn) btn.disabled=true;
+  try{
+    const res=await fetch('/api/investigations/'+id+'/triage',{method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'ack', note:''})});
+    if(!res.ok){ toast('ack failed: '+res.status+(res.status===403?' (admin only)':''),'err'); if(btn) btn.disabled=false; return; }
+  }catch(e){ toast('ack failed','err'); if(btn) btn.disabled=false; return; }
+  toast('#'+id+' acknowledged','ok');
+  load();
+}
+document.addEventListener('click', e=>{
+  const b=(e.target&&e.target.closest)?e.target.closest('button[data-ack]'):null;
+  if(b) ack(Number(b.getAttribute('data-ack')), b);
+});
+
+// nav.js is deferred, so CFOP exists by DOMContentLoaded and not before.
+// Ack is the admin's (the endpoint refuses everyone else); a member is not
+// shown a button that can only fail.
+document.addEventListener('DOMContentLoaded', async ()=>{
+  try{ const who=await window.CFOP.me(); ADMIN=!!(who && (who.role==='admin' || who.auth_disabled)); }catch(e){ ADMIN=false; }
+  load();
+  setInterval(load, 30000);
+});
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) load(); });
+</script>
+</body>
+</html>

@@ -27,8 +27,12 @@ function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
 // badge for an unknown state is grey rather than invisible.
 function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
 
+// A pill tinted from one theme colour (CFOP-696). The colour goes in as
+// --tone and console.css derives the tint and the text from it, so a badge
+// is one declaration here and one rule there; the resolved value rather than
+// var(--x), so an unknown name still lands on the grey fallback.
 function badge(text, varname){ const c=color(varname);
-  return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(text)||'—'}</span>`; }
+  return `<span class="badge" style="--tone:${c}">${esc(text)||'—'}</span>`; }
 
 // ---- timestamps (CFOP-412) -------------------------------------------------
 // Server stamps come in three shapes: the knowledge base's bare
@@ -131,6 +135,10 @@ function trapFocus(dialog){
   if(!dialog||!dialog.addEventListener) return;
   dialog.addEventListener('keydown', e=>{
     if(e.key!=='Tab'||e.defaultPrevented) return;
+    // A dialog that says it is not modal is not a trap: the investigations
+    // pane docks beside its list on a wide screen and lowers aria-modal to
+    // "false" while it does (CFOP-696).
+    if(dialog.getAttribute && dialog.getAttribute('aria-modal')==='false') return;
     const items=Array.from(dialog.querySelectorAll(FOCUSABLE)).filter(el=>!el.hidden);
     if(!items.length){ e.preventDefault(); return; }
     const first=items[0], last=items[items.length-1], a=document.activeElement;

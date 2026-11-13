@@ -5,117 +5,63 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CFOperator · Events</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<!-- Tokens, the rail and the shared kit: one copy, see ui/console.css. -->
+<link rel="stylesheet" href="/console.css">
 <style>
-  :root {
-    --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
-    --border:#2a2a3a; --border-subtle:#1e1e2e;
-    --text-primary:#e0e0e8; --text-secondary:#8888a0; --text-muted:#555566;
-    --accent:#22c55e; --cyan:#06b6d4; --orange:#f59e0b; --red:#ef4444; --purple:#a371f7;
-    --radius:10px; --radius-sm:6px; --header-height:56px;
-  }
-  * { box-sizing:border-box; }
-  button, input, select, textarea { font-family:inherit; }
-  body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
-    font-family:'JetBrains Mono',monospace; font-size:14px; }  /* one face, every page (CFOP-113) */
-  header { height:var(--header-height); background:var(--bg-secondary); border-bottom:1px solid var(--border);
-    display:flex; align-items:center; padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }
-  .logo { font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700; color:var(--accent);
-    letter-spacing:-0.5px; display:flex; align-items:center; gap:10px; }
-  .logo svg { width:24px; height:24px; opacity:.9; }
-  .logo .sub { color:var(--text-secondary); font-weight:500; font-size:14px; }
-  .right { margin-left:auto; display:flex; align-items:center; gap:14px; }
-  .muted { color:var(--text-secondary); font-size:12px; }
-  a { color:var(--cyan); text-decoration:none; } a:hover { text-decoration:underline; }
-  .filters { padding:14px 20px 8px; display:flex; gap:8px; flex-wrap:wrap; }
-  .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
-    border-radius:var(--radius-sm); padding:5px 12px; cursor:pointer; font-size:13px; font-family:inherit; }
-  .chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
-  .chip.active { background:var(--accent); border-color:var(--accent); color:#0a0a0f; font-weight:600; }
-  /* Selects and the search box read as chips: same surface, same size. */
-  .bar { padding:0 20px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  .bar select, .bar input { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
-    border-radius:var(--radius-sm); padding:5px 10px; font-size:13px; }
-  .bar input { min-width:260px; }
-  .bar select:focus-visible, .bar input:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
-  #banner { margin:12px 20px 0; padding:10px 14px; border:1px solid var(--border); border-left:3px solid var(--orange);
-    border-radius:var(--radius-sm); background:var(--bg-tertiary); font-size:13px; line-height:1.5; }
-  #banner.err { border-left-color:var(--red); }
-  table { width:100%; border-collapse:collapse; }
-  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
-  th { color:var(--text-secondary); font-weight:600; font-size:11px; text-transform:uppercase;
-    letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
-  td { font-size:13px; }
-  tbody tr { cursor:pointer; } tbody tr:hover { background:var(--bg-hover); }
-  tbody tr:focus-visible { outline:2px solid var(--cyan); outline-offset:-2px; background:var(--bg-hover); }
-  .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
-    font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
-  .summ { max-width:560px; } .summ .muted { margin-top:3px; }
-  .more { padding:16px 20px; text-align:center; }
-  .empty { padding:40px; text-align:center; color:var(--text-muted); }
-  #backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:40; opacity:0;
-    pointer-events:none; transition:opacity .15s; }
-  #backdrop.open { opacity:1; pointer-events:auto; }
-  #detail { position:fixed; top:0; right:0; width:min(620px,94vw); height:100%; z-index:50;
-    background:var(--bg-secondary); border-left:1px solid var(--border); padding:20px; overflow:auto;
-    transform:translateX(100%); transition:transform .15s; box-shadow:-8px 0 24px #0008; font-size:13px; }
-  #detail.open { transform:translateX(0); }
-  #detail h2 { font-size:20px; margin:0 0 8px; } #detail h3 { font-size:14px; margin:16px 0 8px; }
-  #detail pre { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
-    padding:10px; margin:0; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; }
-  .kv { margin:0 0 8px; line-height:1.55; } .kv b { color:var(--text-secondary); font-weight:600; }
-  .kv > b:first-child { display:inline-block; min-width:88px; }
+  .toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+  .toolbar .tabs { flex-basis:100%; }
+  .fld.check { font-size:13px; min-height:36px; cursor:pointer; }
+  .summ { max-width:640px; }
+  .outcome { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+  .more { padding:12px 16px; text-align:center; border-top:1px solid var(--border-faint); }
+  /* A sweep's burst of findings folds under one row (CFOP-696). The header is
+     a button so the fold is reachable by Tab and says its state. */
+  tr.grp td { padding:0; background:var(--bg-row); border-bottom-color:var(--border-subtle); }
+  .grp-btn { all:unset; box-sizing:border-box; display:flex; flex-wrap:wrap; align-items:center; gap:10px;
+    width:100%; min-height:48px; padding:6px 16px; cursor:pointer; font-size:13px; }
+  .grp-btn:focus-visible { outline:2px solid var(--cyan); outline-offset:-2px; }
+  .grp-btn .chev { width:14px; height:14px; color:var(--text-secondary); transition:transform .15s; flex:none; }
+  .grp-btn[aria-expanded="true"] .chev { transform:rotate(90deg); }
+  .grp-btn b { font-weight:600; font-size:14px; }
+  .grp-btn .end { margin-left:auto; }
+  tr.in-grp > td:first-child { padding-left:40px; }
   .prose { margin:0 0 8px; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
-  .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px;
-    background:none; border:0; padding:0 2px; font-family:inherit; line-height:1; }
-  .x:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
-  #detail details { margin:0 0 8px; }
-  #detail summary { cursor:pointer; color:var(--text-secondary); font-weight:600; font-size:13px; user-select:none; }
-  #detail summary:hover { color:var(--text-primary); }
-  #detail details[open] > summary { margin-bottom:8px; }
   ol.tl { list-style:none; padding:0; margin:0 0 8px; } ol.tl li { margin:0 0 6px; line-height:1.5; }
   ol.tl .when { color:var(--text-secondary); } ol.tl .note { display:block; margin-left:12px; white-space:pre-wrap; word-break:break-word; }
-  .cp { background:none; border:0; padding:2px; margin-left:4px; cursor:pointer; color:var(--text-muted);
-    vertical-align:middle; line-height:0; border-radius:var(--radius-sm); }
-  .cp:hover { color:var(--text-primary); background:var(--bg-hover); }
-  .cp:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
-  .cp.done { color:var(--accent); }
-  #toasts { position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:60; }
-  .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
-    color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-sm); box-shadow:0 4px 16px #0008;
-    font-size:13px; min-width:200px; transition:opacity .2s; }
-  .toast.err { border-left-color:var(--red); }
 </style>
 </head>
 <body>
 <header>
-  <a href="/" class="logo" style="text-decoration:none" title="Back to console">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
-    </svg>
-    CFOperator <span class="sub">/ Events</span>
-  </a>
-  <div class="right"><span class="muted" id="updated"></span></div>
-  <!-- Section nav, identity and logout — see ui/nav.js -->
+  <h1 class="page-title">Events</h1>
+  <span class="muted" id="updated"></span>
+  <!-- The rail: section nav, status, identity and logout — see ui/nav.js -->
   <div id="cfop-nav"></div>
 </header>
 <script src="/nav.js" defer></script>
+<main class="page">
 <div id="banner" role="status" hidden></div>
-<div class="filters" id="filters" aria-label="Status"></div>
-<div class="bar">
-  <select id="f-action" aria-label="Decision" onchange="setFilter('action', this.value)"></select>
-  <select id="f-source" aria-label="Source" onchange="setFilter('source', this.value)"></select>
-  <select id="f-severity" aria-label="Severity" onchange="setFilter('severity', this.value)"></select>
-  <select id="f-window" aria-label="Time window" onchange="setFilter('window', this.value)"></select>
-  <input type="search" id="f-q" aria-label="Search alerts" placeholder="search summary, resource, alert id" oninput="searchInput(this.value)">
+<div class="toolbar">
+  <div class="tabs" id="filters" aria-label="Status"></div>
+  <label class="fld">Decision <select id="f-action" aria-label="Decision" onchange="setFilter('action', this.value)"></select></label>
+  <label class="fld">Source <select id="f-source" aria-label="Source" onchange="setFilter('source', this.value)"></select></label>
+  <label class="fld">Severity <select id="f-severity" aria-label="Severity" onchange="setFilter('severity', this.value)"></select></label>
+  <label class="fld">Time <select id="f-window" aria-label="Time window" onchange="setFilter('window', this.value)"></select></label>
+  <label class="fld check"><input type="checkbox" id="f-group" onchange="setGroup(this.checked)"> Group sweep findings</label>
 </div>
-<!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit.
-     The sort is over the rows loaded so far (the server pages newest first). -->
-<table>
-  <thead><tr><th data-sort="when">Latest</th><th data-sort="source">Source</th><th data-sort="severity">Severity</th><th data-sort="alert">Alert</th><th data-sort="decision">Decision</th><th data-sort="llm">LLM</th><th data-sort="status">Status</th><th data-sort="investigation">Investigation</th></tr></thead>
-  <tbody id="rows"></tbody>
-</table>
-<div id="empty" class="empty" hidden>No alerts match these filters.</div>
-<div id="more" class="more" hidden><button type="button" class="chip" onclick="loadMore()">Load older alerts</button></div>
+<section class="card" aria-label="Event feed">
+  <div class="card-head">
+    <input type="search" id="f-q" aria-label="Search alerts" placeholder="Summary, resource, alert id" oninput="searchInput(this.value)">
+  </div>
+  <!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit.
+       The sort is over the rows loaded so far (the server pages newest first). -->
+  <table>
+    <thead><tr><th data-sort="when">Time</th><th data-sort="severity">Severity</th><th data-sort="alert">Alert</th><th data-sort="source">Source</th><th data-sort="decision">Outcome</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div id="empty" class="empty" hidden>No alerts match these filters.</div>
+  <div id="more" class="more" hidden><button type="button" class="chip" onclick="loadMore()">Load older alerts</button></div>
+</section>
+</main>
 <div id="backdrop" onclick="closeDetail()" aria-hidden="true"></div>
 <!-- A dialog (CFOP-94): inert while closed so its off-screen controls are not in the tab
      order; detail() lifts it, closeDetail() restores it. Labelled by the h2 detail() paints. -->
@@ -287,12 +233,27 @@ function llmStamps(a){
   const investigated=String((((a.result||{}).details)||{}).provider||'').trim();
   return {triaged, investigated};
 }
-function llmCell(a){
-  const s=llmStamps(a);
-  if(s.investigated) return `<span class="mono muted" title="investigated by">${esc(s.investigated)}</span>`;
-  if(s.triaged) return `<span class="mono muted" title="triaged by">${esc(s.triaged)}</span>`;
-  return '<span class="muted">—</span>';
+// Under the summary, in the row: what it is about and which model answered.
+function subLine(a){
+  const s=llmStamps(a), res=resource(a), llm=s.investigated||s.triaged;
+  const parts=[res?esc(res):'', llm?`<span title="${s.investigated?'investigated by':'triaged by'}">${esc(llm)}</span>`:''].filter(Boolean);
+  return parts.length?`<span class="sub">${parts.join(' · ')}</span>`:'';
 }
+// One cell for what became of the alert: the decision, the status when it
+// adds something (a completed investigate is just "investigate"; a failed or
+// running one says so; suppressed/suppressed and log_only/logged say it
+// once), and the investigation it opened.
+const STATUS_SAYS_NOTHING={completed:1};
+const SAME_THING={suppressed:'suppressed', log_only:'logged'};
+function outcomeCell(r){
+  const inv=investigationOf(r), parts=[];
+  if(r.action) parts.push(badge(r.action, ACTION_COLOR[r.action]||'--text-muted'));
+  if(!r.action || (!STATUS_SAYS_NOTHING[r.status] && SAME_THING[r.action]!==r.status))
+    parts.push(badge(r.status, STATUS_COLOR[r.status]||'--text-muted'));
+  if(inv) parts.push(`<a class="mono" href="/investigations#${inv}" onclick="event.stopPropagation()">#${inv}</a>`);
+  return `<span class="outcome">${parts.join('')}</span>`;
+}
+function dot(text, varname){ return `<span class="sev" style="--tone:var(${varname})">${esc(text)||'—'}</span>`; }
 function sourceLabel(s){ return s==='cfoperator-sweep'?'sweep':(s||'—'); }
 function resource(r){ return [r.namespace, r.resource_name].filter(Boolean).join('/'); }
 // LLM- and alert-adjacent URLs: only http(s) reaches an href (same posture as
@@ -303,7 +264,7 @@ function safeUrl(u){ const s=String(u==null?'':u).trim(); if(!s) return '';
 
 function chip(value, label){
   const on=F.status===value;
-  return `<button type="button" class="chip ${on?'active':''}" aria-pressed="${on}" data-status="${esc(value)}" onclick="setFilter('status', this.getAttribute('data-status'))">${esc(label)}</button>`;
+  return `<button type="button" class="tab" aria-pressed="${on}" data-status="${esc(value)}" onclick="setFilter('status', this.getAttribute('data-status'))">${esc(label)}</button>`;
 }
 function options(id, values, allLabel, current, label){
   const el=document.getElementById(id);
@@ -312,33 +273,81 @@ function options(id, values, allLabel, current, label){
   el.value=current;
 }
 function paintFilters(){
-  document.getElementById('filters').innerHTML=chip('','all')+STATUSES.map(s=>chip(s,s)).join('');
-  options('f-action', ACTIONS, 'any decision', F.action);
-  options('f-source', Array.from(SEEN_SOURCES), 'any source', F.source, sourceLabel);
-  options('f-severity', ['critical','warning','info'], 'any severity', F.severity);
-  options('f-window', Object.keys(WINDOWS), 'all time', F.window, w=>'last '+w);
+  document.getElementById('filters').innerHTML=chip('','All')+STATUSES.map(s=>chip(s,s[0].toUpperCase()+s.slice(1))).join('');
+  options('f-action', ACTIONS, 'Any', F.action);
+  options('f-source', Array.from(SEEN_SOURCES), 'Any', F.source, sourceLabel);
+  options('f-severity', ['critical','warning','info'], 'Any', F.severity);
+  options('f-window', Object.keys(WINDOWS), 'All time', F.window, w=>'Last '+w);
   const q=document.getElementById('f-q'); if(q.value!==F.q) q.value=F.q;
+  const g=document.getElementById('f-group'); if(g) g.checked=GROUP;
+}
+// ---- grouping (CFOP-696) ---------------------------------------------------
+// A sweep posts its findings in one burst, and the feed used to show that as
+// seven near-identical rows. With the box ticked, a run of sweep-sourced
+// alerts close together in time folds under one header row. The alerts carry
+// no sweep id, so "close together" is the definition: each within GROUP_GAP_MS
+// of the one before it. Only in time order — under any other sort a run is
+// not a sweep — and only over the rows loaded so far.
+const GROUP_GAP_MS=5*60*1000, SWEEP='cfoperator-sweep', GROUP_STORE='cfop.events.group';
+let GROUP=true; try{ GROUP=localStorage.getItem(GROUP_STORE)!=='0'; }catch(e){ GROUP=true; }
+const FOLDED=new Set();
+function setGroup(on){ GROUP=!!on; try{ localStorage.setItem(GROUP_STORE, GROUP?'1':'0'); }catch(e){} paint(); }
+// Pure: rows in display order -> [{rows:[...], group:bool}]. A run of one is
+// not a group.
+function groupRuns(rows){
+  const out=[]; let run=null;
+  rows.forEach(r=>{
+    const t=tsKey(r.latest_event_at);
+    if(r.source===SWEEP && t!=null && run && Math.abs(run.last-t)<=GROUP_GAP_MS){ run.rows.push(r); run.last=t; return; }
+    run=(r.source===SWEEP && t!=null)?{rows:[r], last:t}:null;
+    out.push(run||{rows:[r]});
+  });
+  return out.map(g=>({rows:g.rows, group:g.rows.length>1}));
+}
+function hhmm(iso){ const d=parseTs(iso); if(!d) return ''; const p=n=>String(n).padStart(2,'0'); return p(d.getHours())+':'+p(d.getMinutes()); }
+const CHEV='<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+function groupHead(rows){
+  // Named by its oldest member: a sweep still arriving grows at the new end.
+  const key=rows[rows.length-1].alert_id, open=!FOLDED.has(key);
+  const times=rows.map(r=>r.latest_event_at).filter(Boolean).sort();
+  const from=hhmm(times[0]), to=hhmm(times[times.length-1]);
+  const c={}; rows.forEach(r=>{ const k=r.action||r.status; c[k]=(c[k]||0)+1; });
+  const worst=rows.reduce((m,r)=>(SEV_RANK[r.severity]||0)>(SEV_RANK[m]||0)?r.severity:m, 'info');
+  return `<tr class="grp"><td colspan="5"><button type="button" class="grp-btn" aria-expanded="${open}" data-grp="${esc(key)}" onclick="toggleGroup(this)">${CHEV}
+      <span class="mono muted">${esc(from===to?from:from+'–'+to)}</span><b>Sweep</b>
+      <span class="muted">${rows.length} findings · ${Object.keys(c).map(k=>c[k]+' '+esc(k)).join(' · ')}</span>
+      <span class="end">${dot(worst, SEVERITY_COLOR[worst]||'--text-muted')}</span></button></td></tr>`;
+}
+function toggleGroup(btn){
+  const key=btn.getAttribute('data-grp');
+  if(FOLDED.has(key)) FOLDED.delete(key); else FOLDED.add(key);
+  paint();
+  const again=document.querySelector?document.querySelector('.grp-btn[data-grp="'+String(key).replace(/["\\]/g,'\\$&')+'"]'):null;
+  if(again&&again.focus) again.focus();
+}
+function rowHtml(r, inGroup){
+  // The alert id reaches the handler through data-id, never through the
+  // inline JS: ids come from alert sources, and a quote in one must not be
+  // able to become script.
+  return `
+    <tr id="row-${esc(r.alert_id)}" data-id="${esc(r.alert_id)}"${inGroup?' class="in-grp"':''} tabindex="0" onclick="openRow(this)" onkeydown="rowKey(event,this)">
+      <td class="mono muted">${fmtTs(r.latest_event_at)}</td>
+      <td>${dot(r.severity, SEVERITY_COLOR[r.severity]||'--text-muted')}</td>
+      <td class="summ">${esc(String(r.summary||'').slice(0,160))}${subLine(r)}</td>
+      <td class="mono muted" style="white-space:nowrap">${esc(sourceLabel(r.source))}</td>
+      <td>${outcomeCell(r)}</td></tr>`;
 }
 function paint(){
   ROWS.forEach(r=>{ if(r.source && !SEEN_SOURCES.has(r.source)){ SEEN_SOURCES.add(r.source); paintFilters(); } });
   document.getElementById('empty').hidden=ROWS.length>0;
   document.getElementById('more').hidden=!CURSOR;
   const focused=focusedRow();
-  // The alert id reaches the handler through data-id, never through the
-  // inline JS: ids come from alert sources, and a quote in one must not be
-  // able to become script.
-  document.getElementById('rows').innerHTML=KIT.sort(ROWS).map(r=>{
-    const inv=investigationOf(r), res=resource(r);
-    return `
-    <tr id="row-${esc(r.alert_id)}" data-id="${esc(r.alert_id)}" tabindex="0" onclick="openRow(this)" onkeydown="rowKey(event,this)">
-      <td class="muted">${fmtTs(r.latest_event_at)}</td>
-      <td>${esc(sourceLabel(r.source))}</td>
-      <td>${badge(r.severity, SEVERITY_COLOR[r.severity]||'--text-muted')}</td>
-      <td class="summ">${esc(String(r.summary||'').slice(0,160))}${res?`<div class="muted">${esc(res)}</div>`:''}</td>
-      <td>${r.action?badge(r.action, ACTION_COLOR[r.action]||'--text-muted'):'<span class="muted">—</span>'}</td>
-      <td>${llmCell(r)}</td>
-      <td>${badge(r.status, STATUS_COLOR[r.status]||'--text-muted')}</td>
-      <td>${inv?`<a href="/investigations#${inv}" onclick="event.stopPropagation()">#${inv}</a>`:''}</td></tr>`;
+  const sorted=KIT.sort(ROWS);
+  const runs=(GROUP && KIT.state.key==='when')?groupRuns(sorted):sorted.map(r=>({rows:[r], group:false}));
+  document.getElementById('rows').innerHTML=runs.map(g=>{
+    if(!g.group) return rowHtml(g.rows[0], false);
+    const folded=FOLDED.has(g.rows[g.rows.length-1].alert_id);
+    return groupHead(g.rows)+(folded?'':g.rows.map(r=>rowHtml(r, true)).join(''));
   }).join('');
   refocusRow(focused);
 }

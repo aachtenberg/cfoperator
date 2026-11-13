@@ -26,11 +26,11 @@ NAV_JS = UI / "nav.js"
 # login.html is deliberately excluded: it is what an *unauthenticated* browser
 # sees, so it has no identity to show, nothing to log out of, and no sections
 # to navigate to.
-CONSOLE_PAGES = ["index.html", "remediations.html", "investigations.html",
+CONSOLE_PAGES = ["index.html", "inbox.html", "remediations.html", "investigations.html",
                  "events.html", "account.html", "admin.html"]
 
 # Admin is adminOnly and appears after /me; the rest always render.
-SECTIONS = ["/", "/remediations", "/investigations", "/events", "/account", "/admin"]
+SECTIONS = ["/", "/inbox", "/remediations", "/investigations", "/events", "/account", "/admin"]
 
 
 def read(name):
@@ -64,7 +64,7 @@ def test_page_does_not_hand_roll_its_own_nav(page):
     body = header.group(0)
 
     # Its own link to another section, outside the mount.
-    for target in ["/remediations", "/investigations", "/events", "/account", "/admin"]:
+    for target in ["/inbox", "/remediations", "/investigations", "/events", "/account", "/admin"]:
         assert f'href="{target}"' not in body, \
             f'{page} still hard-codes a nav link to {target} in its header'
 
@@ -222,7 +222,7 @@ def test_nav_js_is_served():
     res = app.test_client().get("/nav.js")
     assert res.status_code == 200
     assert res.headers["Content-Type"].startswith("application/javascript")
-    assert b"cfop-navbar" in res.data
+    assert b"cfop-rail" in res.data
 
 
 def test_web_server_registers_the_route():

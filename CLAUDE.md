@@ -194,17 +194,29 @@ Mirror it rather than inventing an invocation.
 
 ## Console UI conventions
 
-Six console pages in `ui/` plus `login.html`, no build step, no framework, no
+Seven console pages in `ui/` plus `login.html`, no build step, no framework, no
 outbound network (a CDN reference hangs rather than fails, and the console is
 what gets opened when the WAN is down). No exceptions: third-party code is vendored under
 `ui/vendor/` through `scripts/vendor_ui.py` and its hashed manifest, and
 `test_console_vendor.py` fails on any `http(s)://` in any page.
 
-The header — section nav, active-page state, identity, logout — is shared via
-`ui/nav.js`, served from `/nav.js`. **Do not hand-roll a header on a new page.**
-Add the mount and the script; `test_console_nav.py` enforces this. The five
-pages drifted into three markup shapes and five different link sets when each
-carried its own copy.
+The shell is shared, in two files (CFOP-696). `ui/nav.js`, served from
+`/nav.js`, draws the rail down the left: brand, section nav, active-page state,
+the status card, identity, logout, and the Ask CFOperator button. **Do not
+hand-roll a header or a logo on a new page.** Add the mount and the script;
+`test_console_nav.py` and `test_console_brand.py` enforce this. The pages
+drifted into three markup shapes and five different link sets when each carried
+its own copy.
+
+`ui/console.css`, served from `/console.css`, holds the tokens and the kit:
+`.chip` (buttons), `.tab`, `.badge`, `.card`, tables, the drawer, toasts. Link
+it **before** the page's own `<style>` and keep only what is the page's own in
+that `<style>`; `test_console_shell.py` fails a page that skips the link or
+restates a shared token. `login.html` cannot use it (it is behind the login).
+The font stacks name Inter and JetBrains Mono and load neither.
+
+`/` is the chat and stays the chat: `/?investigation=` and `/?remediation=` are
+how a drawer hands its row over. Inbox, first in the rail, is `/inbox`.
 
 Pages that need the current user should `await CFOP.me()` rather than fetching
 `/api/auth/me` again — `nav.js` already made that call. Since `nav.js` is

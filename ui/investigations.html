@@ -11,95 +11,105 @@
 <script src="/vendor/xterm-addon-fit.js" defer></script>
 <!-- The full report is markdown (CFOP-113); same vendored marked as the chat page. -->
 <script src="/vendor/marked.min.js"></script>
+<!-- Tokens, the rail and the shared kit: one copy, see ui/console.css. -->
+<link rel="stylesheet" href="/console.css">
 <style>
-  :root {
-    --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
-    --border:#2a2a3a; --border-subtle:#1e1e2e;
-    --text-primary:#e0e0e8; --text-secondary:#8888a0; --text-muted:#555566;
-    --accent:#22c55e; --cyan:#06b6d4; --orange:#f59e0b; --red:#ef4444; --purple:#a371f7;
-    --radius:10px; --radius-sm:6px; --header-height:56px;
+  /* ---- the list (CFOP-696) ----
+     Rows are items, not a grid of columns: id, outcome and time on one line,
+     the trigger under it, then who answered and where the recommendation
+     went. It is still the one <table> — listKit sorts by its headers, which
+     become a strip of sort buttons — laid out as blocks. */
+  #list table, #list tbody, #list thead { display:block; }
+  #list > table { min-width:0; }
+  #list thead tr { display:flex; flex-wrap:wrap; align-items:center; gap:2px 14px; padding:8px 16px;
+    border-bottom:1px solid var(--border-subtle); }
+  #list thead tr::before { content:'Sort'; font-size:12px; color:var(--text-dim); }
+  #list th { position:static; padding:0; border:0; background:none; }
+  #list tbody tr { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:6px 8px; align-items:center;
+    grid-template-areas:"id oc when" "trig trig trig" "meta meta meta";
+    padding:12px 16px 12px 14px; border-bottom:1px solid var(--border-faint); border-left:2px solid transparent; }
+  #list tbody tr:last-child { border-bottom:0; }
+  #list td { display:block; padding:0; border:0; min-width:0; }
+  #list td.id { grid-area:id; font-size:12px; color:var(--text-muted); }
+  #list td.oc { grid-area:oc; display:flex; flex-wrap:wrap; gap:6px; }
+  #list td.when { grid-area:when; font-size:12px; color:var(--text-muted); }
+  #list td.trig { grid-area:trig; font-size:14px; font-weight:500; line-height:1.4; overflow-wrap:anywhere; }
+  #list td.meta { grid-area:meta; font-size:12px; color:var(--text-muted); overflow-wrap:anywhere; }
+  /* The open row: a surface and a rule, and aria-current for anyone not seeing either. */
+  #list tbody tr[aria-current="true"] { background:#151522; border-left-color:var(--accent); }
+  .list-head { display:flex; flex-direction:column; gap:12px; padding:14px 16px 12px; border-bottom:1px solid var(--border-subtle); }
+  .list-head input[type="search"] { width:100%; min-height:40px; }
+
+  /* ---- the pane ----
+     Wide enough (DOCK_MQ in the script is this same width), an open
+     investigation sits beside the list instead of over it: no backdrop, no
+     shadow, and not modal — the script lowers aria-modal to match, and
+     trapFocus() lets Tab leave a dialog that says it is not modal. Narrower,
+     or maximized, it is the drawer every other page has. */
+  #detail { padding:20px 24px 96px; }
+  #detail.wide { width:min(1100px,96vw); }
+  @media (min-width: 1280px) {
+    :root { --list-w:clamp(380px, 32vw, 520px); }
+    #backdrop { display:none; }
+    #detail { left:calc(var(--rail-w) + var(--list-w)); width:auto; box-shadow:none; background:var(--bg-primary);
+      border-left:1px solid var(--border-subtle); transition:none; padding:20px 28px 96px; }
+    /* A terminal wants 80 columns: the pane takes the list's room while one is open. */
+    #detail.wide { left:var(--rail-w); width:auto; }
+    body:has(#detail.open) header, body:has(#detail.open) main.page { max-width:var(--list-w); padding-left:16px; padding-right:16px; }
+    /* Docked, the pane is not a layer over the page, so the Ask button is not under it. */
+    .cfop-ask { z-index:55; }
+    body:has(#detail.max) .cfop-ask, body:has(#detail.wide) .cfop-ask { display:none; }
   }
-  * { box-sizing:border-box; }
-  /* Form controls do not inherit the page font by default (the note input
-     rendered in the browser's own); everything typed or clicked matches. */
-  button, input, select, textarea { font-family:inherit; }
-  body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
-    font-family:'JetBrains Mono',monospace; font-size:14px; }  /* one face, every page (CFOP-113) */
-  header { height:var(--header-height); background:var(--bg-secondary); border-bottom:1px solid var(--border);
-    display:flex; align-items:center; padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }
-  .logo { font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700; color:var(--accent);
-    letter-spacing:-0.5px; display:flex; align-items:center; gap:10px; }
-  .logo svg { width:24px; height:24px; opacity:.9; }
-  .logo .sub { color:var(--text-secondary); font-weight:500; font-size:14px; }
-  .right { margin-left:auto; display:flex; align-items:center; gap:14px; }
-  .muted { color:var(--text-secondary); font-size:12px; }
-  a { color:var(--cyan); text-decoration:none; } a:hover { text-decoration:underline; }
-  .filters { padding:14px 20px 12px; display:flex; gap:8px; flex-wrap:wrap; }
-  /* Chips are <button>s (CFOP-94): font-family:inherit is the reset that keeps
-     them in the page face. */
-  .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
-    border-radius:var(--radius-sm); padding:5px 12px; cursor:pointer; font-size:13px; font-family:inherit; }
-  .chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
-  .chip.active { background:var(--accent); border-color:var(--accent); color:#0a0a0f; font-weight:600; }
-  /* The search box reads as a chip: same surface, same size (as on /events). */
-  .bar { padding:0 20px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  .bar input { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
-    border-radius:var(--radius-sm); padding:5px 10px; font-size:13px; min-width:260px; }
-  .bar input:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
-  table { width:100%; border-collapse:collapse; }
-  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
-  th { color:var(--text-secondary); font-weight:600; font-size:11px; text-transform:uppercase;
-    letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
-  td { font-size:13px; } .mono { font-family:'JetBrains Mono',monospace; }
-  tbody tr { cursor:pointer; } tbody tr:hover { background:var(--bg-hover); }
-  tbody tr:focus-visible { outline:2px solid var(--cyan); outline-offset:-2px; background:var(--bg-hover); }
-  .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
-    font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
-  .trig { max-width:560px; }
-  #backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:40; opacity:0;
-    pointer-events:none; transition:opacity .15s; }
-  #backdrop.open { opacity:1; pointer-events:auto; }
-  #detail { position:fixed; top:0; right:0; width:min(620px,94vw); height:100%; z-index:50;
-    background:var(--bg-secondary); border-left:1px solid var(--border); padding:20px; overflow:auto;
-    transform:translateX(100%); transition:transform .15s, width .15s; box-shadow:-8px 0 24px #0008; }
-  #detail.open { transform:translateX(0); }
-  /* One size for prose, labels and controls in the drawer (CFOP-113): 13px,
-     the chip size, so the meta line, the buttons and the text do not step
-     through 12/13/14px. The family is the page's; size is the only difference. */
-  #detail { font-size:13px; }
-  #detail .muted, #detail .cp-note, #detail .cp-status { font-size:inherit; }
-  #detail input { font-size:inherit; padding:4px 8px; background:var(--bg-primary); color:var(--text-primary);
-    border:1px solid var(--border); border-radius:var(--radius-sm); }
-  #detail h2 { font-size:20px; }
-  #detail h3 { font-size:14px; margin:16px 0 8px; }
-  #detail pre { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
-    padding:10px; margin:0; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; }
-  /* Key/value lines: room to breathe, and a label column so the values line
-     up (CFOP-113). Only the leading label is a column; an inline one
-     ("· completed") stays inline. */
-  /* One vertical unit — 8px — between every block in the drawer; a section
-     heading gets two above it. No block carries its own odd margin. */
-  .kv { margin:0 0 8px; line-height:1.55; } .kv b { color:var(--text-secondary); font-weight:600; }
-  .kv > b:first-child { display:inline-block; min-width:88px; }
-  .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px;
-    background:none; border:0; padding:0 2px; font-family:inherit; line-height:1; }
-  .x:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
-  .x.mx { margin-right:10px; padding:2px; line-height:0; }
-  .x.mx svg { width:16px; height:16px; }
-  .x.mx:hover, .x.mx[aria-pressed="true"] { color:var(--text-primary); }
-  .empty { padding:40px; text-align:center; color:var(--text-muted); }
-  /* The handoff command. user-select:all so a double-click takes the whole
-     line — the copy icon is the convenience, not the only way out. */
-  .cmd { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
-    padding:3px 7px; user-select:all; font-size:12px; }
-  /* Click-to-copy (CFOP-113): a quiet clipboard beside the thing it copies;
-     bindCopyIcons() in common.js swaps it for a check on success. */
-  .cp { background:none; border:0; padding:2px; margin-left:4px; cursor:pointer; color:var(--text-muted);
-    vertical-align:middle; line-height:0; border-radius:var(--radius-sm); }
-  .cp:hover { color:var(--text-primary); background:var(--bg-hover); }
-  .cp:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
-  .cp.done { color:var(--accent); }
-  #detail h2 .cp { margin-left:8px; }
+  /* Maximized (CFOP-113): the whole viewport, rail included. Wins over .wide
+     and over the dock; the class is on #detail, which repaints its contents
+     but is never itself replaced. */
+  #detail.max { left:0; width:100vw; background:var(--bg-secondary); }
+  .pane { display:flex; flex-direction:column; gap:16px; max-width:980px; }
+  .pane > * { margin:0; }
+  .p-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+  .p-head h2 { margin:0 !important; font-size:22px !important; }
+  .p-head .end { margin-left:auto; display:flex; align-items:center; gap:4px; }
+  .p-head .x { float:none; display:grid; place-items:center; min-width:32px; min-height:32px; border-radius:var(--radius-sm); }
+  .p-head .x:hover, .p-head .x[aria-pressed="true"] { color:var(--text-primary); background:var(--bg-tertiary); }
+  .p-head .x.mx svg { width:16px; height:16px; }
+  .trigger { padding:12px 14px; border-radius:var(--radius-sm); background:var(--bg-secondary);
+    border:1px solid var(--border-subtle); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+  #detail.max .trigger, #detail.max .pcard, #detail.max .p-actions { background:var(--bg-primary); }
+  .p-meta { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:13px; color:var(--text-secondary); }
+  .p-meta b { font-weight:400; } .p-meta .v { color:var(--text-primary); }
+  /* One bar for everything you can do to this investigation: the verdict on
+     the left, the ways to dig further after the rule. */
+  .p-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px;
+    border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-secondary); }
+  .p-actions input { flex:1 1 200px; min-width:0; min-height:40px; background:var(--bg-primary); }
+  .p-actions .rule { width:1px; height:24px; background:var(--border); }
+  .p-actions .chip svg { color:var(--accent); }
+  .pcard { border:1px solid var(--border-subtle); border-radius:var(--radius); background:var(--bg-secondary); min-width:0; }
+  .pcard > .hd { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border-subtle); }
+  .pcard > .hd h3 { margin:0 !important; }
+  .pcard > .bd { padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+  .pcard > .bd > * { margin:0; }
+  .pgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
+  .prow { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:6px 12px; font-size:13px; }
+  .prow > .k { color:var(--text-secondary); }
+  .sim { display:flex; align-items:center; gap:8px; font-size:13px; min-width:0; }
+  .sim .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-secondary); }
+  .sim .s { font-family:var(--font-mono); font-size:12px; color:var(--text-muted); white-space:nowrap; }
+  .sim button { all:unset; cursor:pointer; color:var(--link); font-family:var(--font-mono); }
+  .sim button:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+  /* Folded sections: the full report and the raw findings are complete but
+     closed, so the pane opens on the decision rather than the essay. */
+  .fold details { margin:0 !important; border-bottom:1px solid var(--border-subtle); }
+  .fold details:last-child { border-bottom:0; }
+  .fold summary { display:flex; align-items:center; gap:8px; min-height:44px; padding:0 16px; list-style:none;
+    color:var(--text-primary) !important; font-weight:500 !important; }
+  .fold summary::-webkit-details-marker { display:none; }
+  .fold summary::before { content:''; width:7px; height:7px; border-right:2px solid var(--text-secondary);
+    border-top:2px solid var(--text-secondary); transform:rotate(45deg); transition:transform .15s; margin-right:4px; }
+  .fold details[open] > summary::before { transform:rotate(135deg); }
+  .fold details[open] > summary { margin-bottom:0 !important; }
+  .fold details > :not(summary) { margin:0 16px 16px; }
+  .rec { font-size:15px; line-height:1.6; }
   /* The recommendation and its fix (CFOP-113): prose and a list, not JSON. */
   .rec { margin:0 0 8px; line-height:1.55; }
   .fix > * { margin:0 0 8px; } .fix > :last-child { margin-bottom:0; } .fix { margin:0 0 8px; }
@@ -109,42 +119,25 @@
   .tgt .k { color:var(--text-secondary); }
   ol.steps { padding-left:22px; line-height:1.55; }
   ol.steps li { margin:0; }
-  .verify code { font-family:'JetBrains Mono',monospace; font-size:12px; background:var(--bg-primary);
+  .verify code { font-family:var(--font-mono); font-size:12px; background:var(--bg-primary);
     border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:2px 6px; }
   .ev { margin:0 0 8px 8px; font-size:13px; } .ev:last-child { margin-bottom:0; }
-  .ev .src { font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text-secondary); }
+  .ev .src { font-family:var(--font-mono); font-size:12px; color:var(--text-secondary); }
   .ev .val { margin-left:12px; white-space:pre-wrap; word-break:break-word; }
-  /* Folded sections: the full report and the raw findings are complete but
-     closed, so the drawer opens on the decision rather than the essay. */
-  #detail details { margin:0 0 8px; }
-  #detail summary { cursor:pointer; color:var(--text-secondary); font-weight:600; font-size:13px; user-select:none; }
-  #detail summary:hover { color:var(--text-primary); }
-  #detail details[open] > summary { margin-bottom:8px; }
   /* Markdown from the agent (the full report) — see renderMarkdown in common.js. */
   .md { font-size:13px; line-height:1.5; }
   .md h1,.md h2,.md h3,.md h4 { font-size:13px; margin:16px 0 8px; } .md > :first-child { margin-top:0; }
   .md p,.md ul,.md ol,.md pre,.md table,.md blockquote { margin:0 0 8px; } .md ul,.md ol { padding-left:22px; }
   .md > :last-child { margin-bottom:0; } .md li { margin:0; }
-  .md code { font-family:'JetBrains Mono',monospace; font-size:12px; background:var(--bg-primary);
+  .md code { font-family:var(--font-mono); font-size:12px; background:var(--bg-primary);
     border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:1px 5px; }
   .md pre code { border:0; padding:0; background:none; }
   .md table { border-collapse:collapse; margin:6px 0; } .md td,.md th { padding:4px 8px; border:1px solid var(--border-subtle); }
-  #toasts { position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:60; }
-  .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
-    color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-sm); box-shadow:0 4px 16px #0008;
-    font-size:13px; min-width:200px; transition:opacity .2s; }
-  .toast.ok { border-left-color:var(--accent); }
-  .toast.err { border-left-color:var(--red); }
-  /* The cockpit (CFOP-59). The drawer widens while a terminal is open so 80
-     columns fit beside the finding; it is still the drawer — the finding stays
-     in view, which is the reason this is not a new tab. */
-  #detail.wide { width:min(1100px,96vw); }
-  /* Maximized (CFOP-113): the whole viewport. Wins over .wide; the class is
-     on #detail, which repaints its contents but is never itself replaced. */
-  #detail.max { width:100vw; }
+  /* The cockpit (CFOP-59): a terminal in the pane, beside the finding — which
+     is the reason this is not a new tab. */
   #cockpit { margin:0 0 8px; } #cockpit:empty { display:none; }
   .cp-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
-  .cp-head .chips { display:flex; gap:6px; flex-wrap:wrap; font-family:'JetBrains Mono',monospace; font-size:12px; }
+  .cp-head .chips { display:flex; gap:6px; flex-wrap:wrap; font-family:var(--font-mono); font-size:12px; }
   .cp-head .chips span { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:var(--radius-sm); padding:2px 9px; }
   .cp-head .chips .ttl.low { color:var(--orange); border-color:var(--orange); }
   .cp-head .chips .ttl.out { color:var(--red); border-color:var(--red); }
@@ -153,7 +146,7 @@
   #term { background:#0a0a0f; border:1px solid var(--border); border-radius:var(--radius-sm); padding:6px; height:min(62vh,560px); overflow:hidden; }
   .cp-status { font-size:12px; color:var(--text-secondary); margin-top:6px; min-height:16px; }
   .cp-status.err { color:var(--red); }
-  .cp-note { font-size:12px; color:var(--text-muted); margin-left:6px; }
+  .cp-note { font-size:12px; color:var(--text-muted); } .cp-note:empty { display:none; }
   /* Explain (CFOP-324): how the investigation got to its answer. A numbered
      timeline; tool rows are <details>, closed until asked, so the drawer
      opens on the summary and the operator unfolds the step that matters. */
@@ -201,27 +194,27 @@
 </head>
 <body>
 <header>
-  <a href="/" class="logo" style="text-decoration:none" title="Back to console">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
-    </svg>
-    CFOperator <span class="sub">/ Investigations</span>
-  </a>
-  <div class="right"><span class="muted" id="updated"></span></div>
-  <!-- Section nav, identity and logout — see ui/nav.js -->
+  <h1 class="page-title">Investigations</h1>
+  <span class="muted" id="updated"></span>
+  <!-- The rail: section nav, status, identity and logout — see ui/nav.js -->
   <div id="cfop-nav"></div>
 </header>
 <script src="/nav.js" defer></script>
-<div class="filters" id="filters"></div>
-<div class="bar">
-  <input type="search" id="f-q" aria-label="Search investigations" placeholder="search trigger, outcome, model, #id" oninput="searchInput(this.value)">
-</div>
-<!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit. -->
-<table>
-  <thead><tr><th data-sort="id">ID</th><th data-sort="outcome">Outcome</th><th data-sort="trigger">Trigger</th><th data-sort="llm">LLM</th><th data-sort="remediation">Remediation</th><th data-sort="duration">Duration</th><th data-sort="started">Started</th></tr></thead>
-  <tbody id="rows"></tbody>
-</table>
-<div id="empty" class="empty" hidden>No investigations match this filter.</div>
+<main class="page">
+<section class="card" id="list" aria-label="Investigation list">
+  <div class="list-head">
+    <div class="tabs" id="filters" aria-label="Outcome"></div>
+    <input type="search" id="f-q" aria-label="Search investigations" placeholder="Trigger, outcome, model, or #id" oninput="searchInput(this.value)">
+  </div>
+  <!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit.
+       The rows are laid out as items, so the header row reads as a strip of sort buttons. -->
+  <table>
+    <thead><tr><th data-sort="id">ID</th><th data-sort="outcome">Outcome</th><th data-sort="trigger">Trigger</th><th data-sort="llm">LLM</th><th data-sort="remediation">Remediation</th><th data-sort="duration">Duration</th><th data-sort="started">Started</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div id="empty" class="empty" hidden>No investigations match this filter.</div>
+</section>
+</main>
 <div id="backdrop" onclick="closeDetail()" aria-hidden="true"></div>
 <!-- A dialog (CFOP-94): inert while closed so its off-screen controls are not in the tab
      order; detail() lifts it, closeDetail() restores it. Labelled by the h2 detail() paints. -->
@@ -291,45 +284,49 @@ function remLink(r){
   if(m) return `<a href="/remediations#${m.id}" onclick="event.stopPropagation()">#${m.id}${m.status?' '+esc(m.status):''}</a>`;
   const pr=safeUrl(r.remediation_pr_url);
   if(pr) return `<a href="${esc(pr)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">PR ↗</a>`;
-  return r.outcome==='needs_action' ? '<span class="muted">none</span>' : '';
+  return r.outcome==='needs_action' ? 'no remediation' : '';
 }
-// Drawer line: on needs_action, "no remediation" must be stated, not inferred
-// from absence. findings.remediation_id covers rows newer than the 500-row map;
-// an inline-proposer PR (findings.remediation_proposal.remediation_pr) counts
-// as a remediation too — that path deliberately bypasses the queue.
+// Where the recommendation went, in the Recommendation card's head: on
+// needs_action, "no remediation" must be stated, not inferred from absence.
+// findings.remediation_id covers rows newer than the 500-row map; an
+// inline-proposer PR (findings.remediation_proposal.remediation_pr) counts as
+// a remediation too — that path deliberately bypasses the queue.
 function remDrawerLine(r){
   const f=r.findings||{};
   const m=REMS[r.id] || (f.remediation_id ? (REMID[f.remediation_id]||{id:f.remediation_id, status:''}) : null);
-  if(m) return `<div class="kv"><b>remediation</b> <a href="/remediations#${m.id}">#${m.id}${m.status?' ('+esc(m.status)+')':''}</a></div>`;
+  if(m) return `<a class="badge" style="--tone:var(--purple)" href="/remediations#${m.id}">remediation #${m.id}${m.status?' '+esc(m.status):''}</a>`;
   const pr=(f.remediation_proposal||{}).remediation_pr||{};
   const prUrl=pr.status==='opened'?safeUrl(pr.html_url):'';
-  if(prUrl) return `<div class="kv"><b>remediation</b> <a href="${esc(prUrl)}" target="_blank" rel="noopener noreferrer">PR opened ↗</a></div>`;
-  return r.outcome==='needs_action' ? `<div class="kv"><b>remediation</b> <span class="muted">none proposed</span></div>` : '';
+  if(prUrl) return `<a class="mono" href="${esc(prUrl)}" target="_blank" rel="noopener noreferrer">PR opened ↗</a>`;
+  return r.outcome==='needs_action' ? `<span class="muted">no remediation proposed</span>` : '';
 }
 // Institutional-memory citations (CFOP-31): findings.similar_past records the
 // past investigations the orient phase actually fed into the prompt — a fact
-// about this run, not the LLM's prose. Ids link back into this page's drawer.
+// about this run, not the LLM's prose. Ids open in this same pane.
 function similarBlock(f){
   const s=f.similar_past||[];
   if(!s.length) return '';
-  return `<h3>Similar past investigations</h3>`+s.map(p=>
-    `<div class="kv">${p.id!=null?`<a href="#" onclick="event.preventDefault();detail(${Number(p.id)})">#${Number(p.id)}</a> `:''}`+
-    `${badge(p.outcome,OC[p.outcome]||'--text-muted')} ${esc((p.trigger||'').slice(0,110))}`+
-    `<span class="muted"> (similarity ${Number(p.similarity||0).toFixed(2)})</span></div>`).join('');
+  return `<section class="pcard" aria-label="Similar past investigations"><div class="hd"><h3>Seen before</h3><span class="muted">${s.length} similar</span></div><div class="bd">`+s.map(p=>
+    `<div class="sim">${p.id!=null?`<button type="button" onclick="detail(${Number(p.id)})">#${Number(p.id)}</button>`:''}`+
+    `${badge(label(p.outcome||'').toLowerCase(),OC[p.outcome]||'--text-muted')}<span class="t" title="${esc(p.trigger||'')}">${esc((p.trigger||'').slice(0,110))}</span>`+
+    `<span class="s">${Number(p.similarity||0).toFixed(2)} match</span></div>`).join('')+`</div></section>`;
 }
 // The model that wrote the report (backend/model). Absence means the row
 // predates the stamp, or the run never reached a model — not "unknown".
 function llmStamp(provider){
   return provider ? `<span class="mono muted">${esc(provider)}</span>` : '—';
 }
+const OUTCOME_LABEL={needs_action:'Needs action',in_progress:'Running',escalate:'Escalate'};
+function label(o){ return OUTCOME_LABEL[o]||(o.charAt(0).toUpperCase()+o.slice(1).replace(/_/g,' ')); }
 function paint(){
   const c={}; ALL.forEach(r=>c[r.outcome]=(c[r.outcome]||0)+1);
   const tri=ALL.filter(r=>r.triage_action).length;
-  const seen=OUTCOMES.filter(o=>c[o]);
+  // What is waiting on someone leads; "All" closes the set.
+  const seen=['needs_action'].concat(OUTCOMES.filter(o=>o!=='needs_action')).filter(o=>c[o]||filter===o);
   document.getElementById('filters').innerHTML =
-    chip('', `all (${ALL.length})`)+
-    seen.map(o=>chip(o, `${o} (${c[o]})`)).join('')+
-    (tri?chip('__triaged', `triaged (${tri})`):'');
+    seen.map(o=>chip(o, label(o), c[o]||0)).join('')+
+    (tri?chip('__triaged', 'Triaged', tri):'')+
+    chip('', 'All', ALL.length);
   let rows=filter==='__triaged'?ALL.filter(r=>r.triage_action)
            :filter==='__untriaged'?ALL.filter(r=>!r.triage_action)
            :filter?ALL.filter(r=>r.outcome===filter):ALL;
@@ -340,26 +337,36 @@ function paint(){
   rows=KIT.sort(rows);
   document.getElementById('empty').hidden=rows.length>0;
   const focused=focusedRow();
-  document.getElementById('rows').innerHTML=rows.map(r=>`
-    <tr id="row-${r.id}" tabindex="0" onclick="detail(${r.id})" onkeydown="rowKey(event,${r.id})">
-      <td class="mono">#${r.id}</td>
-      <td>${badge(r.outcome, OC[r.outcome]||'--text-muted')}${r.triage_action?' '+badge(r.triage_action,'--accent'):''}</td>
+  document.getElementById('rows').innerHTML=rows.map(r=>{
+    // Who answered, how long it took, where the recommendation went. A run
+    // that never reached a model names none: a dash, never "unknown".
+    const meta=[r.provider?esc(r.provider):'', r.duration_seconds?Math.round(r.duration_seconds)+'s':'', remLink(r)].filter(Boolean).join(' · ');
+    return `
+    <tr id="row-${r.id}" tabindex="0"${r.id===OPEN?' aria-current="true"':''} onclick="detail(${r.id})" onkeydown="rowKey(event,${r.id})">
+      <td class="id mono">#${r.id}</td>
+      <td class="oc">${badge(label(r.outcome||'').toLowerCase(), OC[r.outcome]||'--text-muted')}${r.triage_action?badge(r.triage_action,'--accent'):''}</td>
+      <td class="when mono">${fmtTs(r.started_at)}</td>
       <td class="trig">${esc(r.trigger||'').slice(0,140)}</td>
-      <td>${llmStamp(r.provider)}</td>
-      <td>${remLink(r)}</td>
-      <td class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':'—'}</td>
-      <td class="muted">${fmtTs(r.started_at)}</td></tr>`).join('');
+      <td class="meta mono">${meta||'—'}</td></tr>`; }).join('');
   refocusRow(focused);
+}
+// The open row carries aria-current; moved by attribute so opening a row does
+// not rebuild the list under the pointer.
+function markOpen(){
+  if(!document.querySelectorAll) return;
+  document.querySelectorAll('#rows tr[aria-current]').forEach(tr=>tr.removeAttribute('aria-current'));
+  const tr=OPEN===null?null:document.getElementById('row-'+OPEN);
+  if(tr&&tr.setAttribute) tr.setAttribute('aria-current','true');
 }
 function setF(o){ filter=o; paint(); }
 // The search narrows the rows the page already holds (the chips' set), per keystroke.
 function searchInput(v){ Q=String(v||'').trim(); paint(); }
-// Filter chips are buttons with aria-pressed (CFOP-94): the active filter is
+// Filter tabs are buttons with aria-pressed (CFOP-94): the active filter is
 // not signalled by colour alone, and a button is reachable by Tab where the
 // span it replaced was not.
-function chip(value, label){
+function chip(value, text, n){
   const on=filter===value;
-  return `<button type="button" class="chip ${on?'active':''}" aria-pressed="${on}" onclick="setF('${value}')">${label}</button>`;
+  return `<button type="button" class="tab" aria-pressed="${on}" onclick="setF('${value}')">${text}<span class="n">${n}</span></button>`;
 }
 // Rows are focusable rather than links (CFOP-94): a fragment link would push a
 // history entry per row, which the replaceState decision below exists to
@@ -384,7 +391,16 @@ let OPEN=null;
 // Held only while open: Escape with nothing open must not move focus.
 let OPENER=null;
 function closeDetail(){ const d=document.getElementById('detail'); disconnectCockpit(); d.classList.remove('open'); d.inert=true; document.getElementById('backdrop').classList.remove('open');
-  OPEN=null; history.replaceState(null,'',location.pathname+location.search); restoreFocus(); }
+  OPEN=null; history.replaceState(null,'',location.pathname+location.search); markOpen(); restoreFocus(); }
+// Docked or drawer (CFOP-696). At DOCK_MQ and wider the open investigation is
+// a pane beside the list (the stylesheet's media query is the same width) and
+// the list stays usable, so the dialog must not claim to be modal: aria-modal
+// goes to "false" and trapFocus() stops holding Tab. Maximized, it covers the
+// page again and is modal again.
+const DOCK_MQ='(min-width: 1280px)';
+function docked(){ try{ return !!(window.matchMedia && window.matchMedia(DOCK_MQ).matches) && !MAX; }catch(e){ return false; } }
+function applyModal(){ const d=document.getElementById('detail'); if(d&&d.setAttribute) d.setAttribute('aria-modal', docked()?'false':'true'); }
+try{ const mq=window.matchMedia?window.matchMedia(DOCK_MQ):null; if(mq&&mq.addEventListener) mq.addEventListener('change', applyModal); }catch(e){}
 function restoreFocus(){
   const o=OPENER; OPENER=null; if(!o) return;
   // The poll may have replaced the row since; the same id is the same row.
@@ -396,7 +412,7 @@ function restoreFocus(){
 document.addEventListener('keydown',e=>{ if(e.key==='Escape' && !COCKPIT.ws) closeDetail(); });
 // Tab stays inside the open drawer (CFOP-95); a Tab the terminal consumed is left to it.
 trapFocus(document.getElementById('detail'));
-// Maximize (CFOP-113). 620px keeps the table visible beside the drawer; a
+// Maximize (CFOP-113). The pane leaves the list visible beside it; a
 // long report, the raw findings or a terminal want the room. Page state, not
 // stored: it survives every drawer repaint but not a reload, because this
 // page touches no storage at all (test_console_cockpit) so the cockpit ticket
@@ -419,7 +435,7 @@ function applyMax(){
 }
 function toggleMax(){
   MAX=!MAX;
-  applyMax();
+  applyMax(); applyModal();
   refit();  // an open terminal takes the new width
 }
 applyMax();
@@ -433,7 +449,7 @@ bindCopyIcons(document);
 function eventLine(r){
   const a=String(r.alert_id||'').trim();
   if(!a) return '';
-  return `<div class="kv"><b>event</b> <a class="mono" href="/events#${encodeURIComponent(a)}">${esc(a)}</a></div>`;
+  return `<span><b>event</b> <a class="mono" href="/events#${encodeURIComponent(a)}" title="${esc(a)}">${esc(a.length>28?a.slice(0,12)+'…'+a.slice(-8):a)}</a></span>`;
 }
 async function detail(id, opts){
   // Tear any open terminal down FIRST, unconditionally. detail() replaces the
@@ -448,7 +464,7 @@ async function detail(id, opts){
   // painted over.
   if(OPEN===null) OPENER=document.activeElement||null;
   d.classList.add('open'); d.inert=false; document.getElementById('backdrop').classList.add('open');
-  OPEN=id; EXPLAIN=null; history.replaceState(null,'','#'+id);
+  OPEN=id; EXPLAIN=null; history.replaceState(null,'','#'+id); applyModal(); markOpen();
   // A non-OK body (a 401 once the session is gone, a 404) is JSON too; it
   // used to paint as "Investigation #undefined". Say what happened instead.
   let r; try{
@@ -465,28 +481,33 @@ async function detail(id, opts){
   if(OPEN!==id) return;
   const f=r.findings||{};
   const title='Investigation #'+r.id;
-  d.innerHTML=`
-    <button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button>${maxButton()}
-    <h2 id="detail-title" style="margin:0 0 8px">${esc(title)}${copyIcon('investigation title',{text:title+(r.trigger?' — '+r.trigger:'')})}</h2>
-    <div class="kv">${badge(r.outcome,OC[r.outcome]||'--text-muted')}
-      <span class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':''} · ${r.tool_calls_count||0} tool calls</span></div>
-    ${f.provider?`<div class="kv"><b>investigated by</b> <span class="mono">${esc(f.provider)}</span></div>`:''}
-    <div class="kv"><b>trigger</b> <span id="trigger-text">${esc(r.trigger)}</span>${copyIcon('trigger',{from:'trigger-text'})}</div>
-    <div class="kv"><b>started</b> ${fmtTs(r.started_at,{seconds:true})}${r.completed_at?' · <b>completed</b> '+fmtTs(r.completed_at,{seconds:true,sameDayAs:r.started_at}):''}</div>
-    ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}
-    ${eventLine(r)}
-    ${attachBlock(r)}
-    ${askBlock(r)}
+  const secs=r.duration_seconds?Math.round(r.duration_seconds)+'s':'';
+  d.innerHTML=`<div class="pane">
+    <div class="p-head">
+      <h2 id="detail-title">${esc(title)}${copyIcon('investigation title',{text:title+(r.trigger?' — '+r.trigger:'')})}</h2>
+      ${badge(label(r.outcome||'').toLowerCase(),OC[r.outcome]||'--text-muted')}
+      <span class="end">${maxButton()}<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button></span>
+    </div>
+    <p class="trigger mono"><span id="trigger-text">${esc(r.trigger)}</span>${copyIcon('trigger',{from:'trigger-text'})}</p>
+    <div class="p-meta">
+      ${f.provider?`<span><b>investigated by</b> <span class="mono v">${esc(f.provider)}</span></span>`:''}
+      <span><b>ran</b> <span class="v">${fmtTs(r.started_at,{seconds:true})}${r.completed_at?' → '+fmtTs(r.completed_at,{seconds:true,sameDayAs:r.started_at}):''}</span>${secs?' ('+secs+')':''}</span>
+      <span><span class="v">${r.tool_calls_count||0}</span> tool calls</span>
+      ${f.host?`<span><b>host</b> <span class="mono v">${esc(f.host)}</span></span>`:''}
+      ${eventLine(r)}
+    </div>
+    ${actionBar(r)}
+    <div id="explain"></div>
     <div id="cockpit"></div>
-    ${remDrawerLine(r)}
-    ${triageBlock(r)}
+    ${recommendationBlock(f, r)}
+    <div class="pgrid">${triageBlock(r)}${similarBlock(f)}</div>
     ${sessionsBlock(r)}
-    ${similarBlock(f)}
-    ${recommendationBlock(f)}
-    ${reportBlock(f)}
-    <details><summary>Raw findings${copyIcon('raw findings',{from:'raw-findings'})}</summary>
-      <pre id="raw-findings">${esc(JSON.stringify(f,null,2))}</pre></details>`;
-  applyMax();
+    <div class="pcard fold">
+      ${reportBlock(f)}
+      <details><summary>Raw findings${copyIcon('raw findings',{from:'raw-findings'})}</summary>
+        <pre id="raw-findings">${esc(JSON.stringify(f,null,2))}</pre></details>
+    </div></div>`;
+  applyMax(); applyModal(); markOpen();
   focusDetailClose();
   if(opts && opts.explain) toggleExplain(id);
 }
@@ -497,13 +518,14 @@ async function detail(id, opts){
 // not the steps, so they fold. The shape is agent.py's _FIX_JSON_SCHEMA; every
 // field is optional here because older rows carry fewer of them.
 const RISK={low:'--accent',med:'--orange',medium:'--orange',high:'--red'};
-function recommendationBlock(f){
+function recommendationBlock(f, r){
   const rec=String(f.recommendation||'').trim();
   const fix=(f.fix&&typeof f.fix==='object')?f.fix:null;
-  if(!rec && !fix) return '';
-  let h=`<h3>Recommendation${rec?copyIcon('recommendation',{from:'rec-text'}):''}</h3>`;
-  if(rec) h+=`<p class="rec" id="rec-text">${esc(rec)}</p>`;
-  if(!fix) return h;
+  const went=r?remDrawerLine(r):'';
+  if(!rec && !fix && !went) return '';
+  let h=`<section class="pcard" aria-label="Recommendation"><div class="hd"><h3>Recommendation${rec?copyIcon('recommendation',{from:'rec-text'}):''}</h3>${went}</div><div class="bd">`;
+  h+=rec?`<p class="rec" id="rec-text">${esc(rec)}</p>`:`<p class="muted">The investigation made no recommendation.</p>`;
+  if(!fix) return h+`</div></section>`;
   const targets=Array.isArray(fix.targets)?fix.targets.filter(t=>t&&typeof t==='object'):[];
   const steps=Array.isArray(fix.steps)?fix.steps.filter(x=>x!=null&&String(x).trim()).map(String):[];
   const observed=Array.isArray(fix.observed)?fix.observed.filter(o=>o&&typeof o==='object'):[];
@@ -526,7 +548,7 @@ function recommendationBlock(f){
     h+=rejected.map(x=>`<div class="ev"><span class="src">rejected</span> ${esc(x.alternative||'')} <span class="muted">— ${esc(x.why_not||'')}</span></div>`).join('');
     h+=`</details>`;
   }
-  return h+`</div>`;
+  return h+`</div></div></section>`;
 }
 // The full report (findings.response) is the model's own write-up and mostly
 // the recommendation again, at length; it folds so the drawer opens on the
@@ -558,15 +580,32 @@ function reportBlock(f){
   if(!t) return '';
   return `<details><summary>Full report${copyIcon('full report',{text:t})}</summary><div class="md">${renderMarkdown(t)}</div></details>`;
 }
-// Hand the investigation to the console chat (CFOP-113), as the remediations
-// drawer does for its rows (CFOP-109): index.html reads ?investigation=, opens
-// a fresh session and asks about what this drawer shows — trigger,
-// recommendation, steps, verify — so the operator does not carry the id over
-// by hand. A link, not a button: it is navigation.
-function askBlock(r){
-  return `<div class="kv"><a class="chip" href="/?investigation=${Number(r.id)}" title="open the console chat on this investigation">💬 Ask console</a>
-    <button type="button" class="chip" id="explain-btn" aria-expanded="false" aria-controls="explain" onclick="toggleExplain(${Number(r.id)})" title="how this investigation got to its answer">Explain</button></div>
-    <div id="explain"></div>`;
+// The action bar. Left of the rule is the operator's verdict (CFOP-65): it
+// records triage_action; the agent's own `outcome` is deliberately left
+// alone, because that is what the similar-investigation search cites as
+// precedent to future triage. Right of it, the ways to dig further:
+//
+// Ask hands the investigation to the console chat (CFOP-113), as the
+// remediations drawer does for its rows (CFOP-109): index.html reads
+// ?investigation=, opens a fresh session and asks about what this pane shows.
+// A link, not a button: it is navigation.
+//
+// "Open cockpit" is spawn plus a terminal, and spawn is the admin's: the
+// button is drawn for admins only, and the endpoint refuses everyone else
+// anyway. Members keep the attach line in the Triage card.
+const ASK_MARK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.35-5.65M20 4v4h-4"/><path d="M12 7.6l1.1 3.3 3.3 1.1-3.3 1.1-1.1 3.3-1.1-3.3-3.3-1.1 3.3-1.1z" fill="currentColor" stroke-width="1"/></svg>';
+function actionBar(r){
+  const id=Number(r.id);
+  const open=(ADMIN&&r.attach_command)?`<button type="button" class="chip lg" id="open-cockpit" onclick="openCockpit(${id})">Open cockpit</button>`:'';
+  return `<div class="p-actions">
+      <input id="tn-${id}" aria-label="Resolution note" placeholder="Resolution note (optional)">
+      <button type="button" class="chip lg primary" onclick="triage(${id},'resolved')">Resolve</button>
+      <button type="button" class="chip lg" onclick="triage(${id},'ack')">Acknowledge</button>
+      <span class="rule" aria-hidden="true"></span>
+      <a class="chip lg" href="/?investigation=${id}" title="open the console chat on this investigation">${ASK_MARK}Ask about this</a>
+      <button type="button" class="chip lg" id="explain-btn" aria-expanded="false" aria-controls="explain" onclick="toggleExplain(${id})" title="how this investigation got to its answer">Explain</button>
+      ${open}
+    </div>`;
 }
 // The handoff (CFOP-73). Slack, Discord and ntfy all end a notification with
 // this line; the console is where you are actually looking at the
@@ -576,11 +615,8 @@ function askBlock(r){
 function attachBlock(r){
   const cmd=r.attach_command;
   if(!cmd) return '';
-  // "Open cockpit" is spawn plus a terminal, and spawn is the admin's: the
-  // button is drawn for admins only, and the endpoint refuses everyone else
-  // anyway. Members keep the attach line.
-  const open=ADMIN?` <button type="button" class="chip" id="open-cockpit" onclick="openCockpit(${Number(r.id)})">Open cockpit</button><span class="cp-note" id="cockpit-note"></span>`:'';
-  return `<div class="kv"><b>take over</b> <code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>${copyIcon('attach command',{from:'attach-cmd'})}${open}</div>`;
+  return `<div class="prow"><span class="k">take over</span><span><code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>${copyIcon('attach command',{from:'attach-cmd'})}</span></div>
+    <div class="cp-note" id="cockpit-note"></div>`;
 }
 // Cockpit sessions (CFOP-37) — what humans worked out against this
 // investigation, appended beside it rather than merged into `findings`. Placed
@@ -590,7 +626,7 @@ function attachBlock(r){
 function sessionsBlock(r){
   const rows=r.sessions||[];
   if(!rows.length) return '';
-  return `<h3>Cockpit sessions (${rows.length})</h3>`+rows.map(s=>{
+  return `<section class="pcard" aria-label="Cockpit sessions"><div class="hd"><h3>Cockpit sessions</h3><span class="muted">${rows.length}</span></div><div class="bd">`+rows.map(s=>{
     const d=s.detail||{};
     const where=[d.tier?'tier '+esc(d.tier):'', d.host?esc(d.host):''].filter(Boolean).join(' · ');
     const meta=[where, d.duration_seconds?Math.round(d.duration_seconds)+'s':'',
@@ -605,21 +641,17 @@ function sessionsBlock(r){
     return `<div class="kv">${badge(s.outcome||'unrecorded','--accent')}${warn}
         <span class="muted">${esc(s.actor||'')}${meta?' · '+meta:''}${s.recorded_at?' · '+fmtTs(s.recorded_at,{seconds:true}):''}</span>${learn}</div>
       <pre>${esc(s.summary||'')}</pre>${cmds}`;
-  }).join('');
+  }).join('')+`</div></section>`;
 }
-// Operator triage (CFOP-65). Records the human's verdict in triage_action;
-// the agent's own `outcome` is deliberately left alone, because that is what
-// the similar-investigation search cites as precedent to future triage.
+// The Triage card: what a person has decided, and how to take the
+// investigation over by hand. The verdict buttons are in the action bar.
 function triageBlock(r){
   const act=r.triage_action;
   const state=act?`${badge(act,'--accent')}${r.operator_notes?' <span class="muted">'+esc(r.operator_notes)+'</span>':''}`
-                 :'<span class="muted">not triaged</span>';
-  return `<div class="kv"><b>operator</b> ${state}</div>
-    <div class="kv" style="gap:6px;flex-wrap:wrap">
-      <input id="tn-${r.id}" placeholder="note (optional)" style="flex:1;min-width:180px">
-      <button type="button" class="chip" onclick="triage(${r.id},'resolved')">resolve</button>
-      <button type="button" class="chip" onclick="triage(${r.id},'ack')">ack</button>
-    </div>`;
+                 :'<span style="color:#fbbf24">not triaged</span>';
+  return `<section class="pcard" aria-label="Triage"><div class="hd"><h3>Triage</h3></div><div class="bd">
+    <div class="prow"><span class="k">operator</span><span>${state}</span></div>
+    ${attachBlock(r)}</div></section>`;
 }
 async function triage(id, action){
   const el=document.getElementById('tn-'+id);

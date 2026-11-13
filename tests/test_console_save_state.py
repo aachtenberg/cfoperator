@@ -90,12 +90,16 @@ def test_a_primary_save_is_held_while_saving(page, attrs):
         "the request is in flight lights it for a second submit.")
 
 
-@pytest.mark.parametrize("page", sorted({page for page, _ in SAVES}))
-def test_a_disabled_primary_save_looks_grey(page):
+def test_a_disabled_primary_save_looks_grey():
     """.chip:disabled only dims, so a disabled primary would still read as
-    accent. The page has to style the disabled primary itself."""
-    assert re.search(r"\.chip\.primary:disabled\s*\{[^}]*border-color", read(page)), (
-        f"{page}: no .chip.primary:disabled rule; a clean Save would still look highlighted")
+    accent. The rule lives with .chip.primary in the shared stylesheet
+    (CFOP-696); a page restating it would bring back the copy that drifted."""
+    css = (UI / "console.css").read_text(encoding="utf-8")
+    assert re.search(r"\.chip\.primary:disabled\s*\{[^}]*border-color", css), (
+        "console.css has no .chip.primary:disabled rule; a clean Save would still look highlighted")
+    for page in sorted({page for page, _ in SAVES}):
+        assert ".chip.primary" not in re.search(r"<style>.*?</style>", read(page), re.S).group(0), (
+            f"{page} restyles .chip.primary; the shared rule in console.css is the one copy")
 
 
 # --------------------------------------------------------------------------
