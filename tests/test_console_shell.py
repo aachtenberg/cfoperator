@@ -93,6 +93,37 @@ def test_the_hidden_attribute_still_hides():
         "nothing relies on [hidden] any more; this guard can go with it")
 
 
+def test_every_console_table_keeps_a_sticky_opaque_head():
+    """The pages' own `th { position:sticky }` rules went when their styles
+    moved to console.css, and the shared rule first named only main.page —
+    so Admin's and Account's tables, which sit straight in a .panel or the
+    body, lost theirs (Bugbot on #374). The rule names containers, so this
+    checks every <table> in a page sits in one it names, and that each
+    sticky head has a background."""
+    css = CSS.read_text(encoding="utf-8")
+    sticky = re.search(r"(?m)^([^{}\n]*th[^{}\n]*)\{[^}]*position\s*:\s*sticky", css)
+    assert sticky, "console.css has no sticky table head"
+    selectors = [x.strip() for x in sticky.group(1).split(",")]
+    assert selectors == ["main.page th", ".panel > table th", "body > table th"]
+    for sel in selectors:
+        assert re.search(r"(?m)^[^{}\n]*" + re.escape(sel) + r"[^{}\n]*\{[^}]*background\s*:", css), (
+            f"{sel} is sticky with no background; rows would show through the headings")
+    seen = 0
+    for page in CONSOLE_PAGES:
+        # Markup only: scripts build tables in template strings, and a style
+        # block or a comment may merely mention one.
+        html = re.sub(r"<script.*?</script>|<style.*?</style>|<!--.*?-->", "", read(page), flags=re.S)
+        for m in re.finditer(r"<table", html):
+            seen += 1
+            before = html[:m.start()]
+            in_main = before.count("<main") > before.count("</main>")
+            in_panel = before.count('<section class="panel"') > before.count("</section>")
+            indent = before[before.rfind("\n") + 1:]
+            assert in_main or (in_panel and indent == "  ") or indent == "", (
+                f"{page}: a <table> sits where no sticky-head selector reaches")
+    assert seen >= 8, "found too few tables for this to be checking anything"
+
+
 def test_login_does_not_depend_on_the_authenticated_stylesheet():
     assert "/console.css" not in read("login.html"), (
         "login.html is painted before a session exists; /console.css is behind the login")

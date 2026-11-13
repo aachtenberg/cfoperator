@@ -209,8 +209,14 @@ table { width:100%; border-collapse:collapse; }
 th, td { text-align:left; padding:12px 16px; border-bottom:1px solid var(--border-faint); vertical-align:top; }
 th { color:var(--text-muted); font-weight:500; font-size:12px; padding-top:10px; padding-bottom:10px;
   border-bottom-color:var(--border-subtle); white-space:nowrap; }
-/* A list page's head stays in view while its rows scroll. */
-main.page th { position:sticky; top:var(--header-height); background:var(--bg-secondary); z-index:1; }
+/* A table's head stays in view while its rows scroll. Named by where the
+   console's tables sit — in a list page's card, straight in an Admin panel,
+   straight in the body on Account — rather than every th, so a markdown
+   table in the chat or in a report does not get one. Opaque in each place:
+   a see-through sticky head shows the rows through the headings. */
+main.page th, .panel > table th, body > table th { position:sticky; top:var(--header-height); z-index:1; }
+main.page th { background:var(--bg-secondary); }
+.panel > table th, body > table th { background:var(--bg-primary); }
 td { font-size:13px; line-height:1.45; }
 tbody tr[tabindex] { cursor:pointer; }
 tbody tr[tabindex]:hover { background:var(--bg-row); }
