@@ -110,7 +110,7 @@ shared header, not to assert today's markup. Mutation-check a new guard once
 - Include a section for any deviation from what the issues asked for, with the
   reasoning. Reviewers should never have to discover a narrowed scope by reading
   the diff.
-- Two reviewers run on their own, and one more you ask for on every PR:
+- Three reviewers run on their own; none has to be asked for:
   - **The LLM review** (`llm-review`, CFOP-400/404), a PR comment edited in
     place on every push. Reflection AI's Beam serves it on a hosted runner,
     and Claude Haiku 5.5 through OpenRouter takes over in the same run when
@@ -124,15 +124,18 @@ shared header, not to assert today's markup. Mutation-check a new guard once
     re-run it. Findings arrive as inline comments from `cursor[bot]`. A
     clean run gets an APPROVED review from the Cursor Approval Agent saying
     human review is not required; that approval is not the merge gate.
-  - **CodeRabbit, by hand.** The app is installed, but automatic reviews are
-    off for this repo (its check shows SKIPPED), so comment
-    `@coderabbit review` once the PR is up. It is the one reviewer that reads
-    past the diff: on #370 it searched the repo and found two defects that
-    depended on another file's contract, after the LLM review and Bugbot had
-    both passed the commit. The plan includes one review an hour, so ask
-    once per PR. Inside the hour it answers "Review limit reached" with the
-    minutes to wait; ask again after that. It is done when a review object exists, with findings inline
-    and in its body; a finished summary comment alone is not a review.
+  - **The agent review** (`agent-review.yml`, the check `review /
+    agent-review`), a `github-actions[bot]` comment headed "Agent review"
+    with numbered findings by severity, each with what breaks and a
+    suggested fix. It is OpenCode on a read-only checkout of the PR, from
+    `aachtenberg/agent-review`, on GLM 5.3 Flash through OpenRouter. It is
+    the one reviewer that reads past the diff: on #374 it grepped the pages
+    and found that the new shared stylesheet's `display` rules had stopped
+    the `hidden` attribute working in `nav.js` and `admin.html`, which the
+    LLM review had passed. It runs when a PR is opened, reopened or marked
+    ready, **not on a push**, so a fix is not re-reviewed on its own: the
+    repo owner comments `/review` to run it again (`/review full` for the
+    whole PR rather than what changed). It skips drafts and fork PRs.
 
   Gone, so do not wait for them: the local gemma4 review (CFOP-402: it
   proposed nothing on 46 of 48 PRs and, measured on a real diff, caught a
@@ -140,6 +143,8 @@ shared header, not to assert today's markup. Mutation-check a new guard once
   caught), and the automatic Claude review, because it reviewed every push
   and a PR with five review rounds paid for five (#322);
   `tests/test_workflows.py` keeps it off push events.
+  CodeRabbit is gone too: the app was removed, and `@coderabbit review`
+  now reaches nobody.
   For a second opinion on a PR that deserves one, comment `@claude review`
   (`claude.yml`). **Do not request a Copilot review**: its credit is spent,
   and a request comes back as a "quota limit" comment, not a review.
@@ -154,7 +159,8 @@ shared header, not to assert today's markup. Mutation-check a new guard once
   until someone asked). A comment saying "No review for <sha>" means that
   run failed; look at its log before merging past it. A push replaces the
   comment, so after a fix wait for it to come back for the new head.
-  Bugbot's and CodeRabbit's findings are triaged the same way.
+  The agent review's and Bugbot's findings are triaged the same way; the
+  agent review's comment names the head it read in its footer.
   Then:
   - real finding → smallest fix, reply on the PR, wait for CI
   - nit you agree with → fix it; "non-blocking" is not skip
