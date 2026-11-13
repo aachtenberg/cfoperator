@@ -285,22 +285,27 @@ function paintFilters(){
 // A sweep posts its findings in one burst, and the feed used to show that as
 // seven near-identical rows. With the box ticked, a run of sweep-sourced
 // alerts close together in time folds under one header row. The alerts carry
-// no sweep id, so "close together" is the definition: each within GROUP_GAP_MS
-// of the one before it. Only in time order — under any other sort a run is
-// not a sweep — and only over the rows loaded so far.
+// no sweep id, so "close together" is the definition: within GROUP_GAP_MS of
+// the run's first row. Of its first row, not of the row before: chained, a
+// sweep every few minutes would fold the whole loaded history into one row,
+// and the interval can be set as low as a minute. Only in time order — under
+// any other sort a run is not a sweep — and only over the rows loaded so far.
 const GROUP_GAP_MS=5*60*1000, SWEEP='cfoperator-sweep', GROUP_STORE='cfop.events.group';
 let GROUP=true; try{ GROUP=localStorage.getItem(GROUP_STORE)!=='0'; }catch(e){ GROUP=true; }
 const FOLDED=new Set();
 function setGroup(on){ GROUP=!!on; try{ localStorage.setItem(GROUP_STORE, GROUP?'1':'0'); }catch(e){} paint(); }
 // Pure: rows in display order -> [{rows:[...], group:bool}]. A run of one is
-// not a group.
+// not a group. A row from another source is emitted on its own and leaves the
+// open run alone: an alertmanager firing while a sweep is still posting must
+// not cut that sweep in two. The run's rows sit together where its first one
+// was, so such a row shows just after the group it fell inside.
 function groupRuns(rows){
   const out=[]; let run=null;
   rows.forEach(r=>{
     const t=tsKey(r.latest_event_at);
-    if(r.source===SWEEP && t!=null && run && Math.abs(run.last-t)<=GROUP_GAP_MS){ run.rows.push(r); run.last=t; return; }
-    run=(r.source===SWEEP && t!=null)?{rows:[r], last:t}:null;
-    out.push(run||{rows:[r]});
+    if(r.source!==SWEEP || t==null){ out.push({rows:[r]}); return; }
+    if(run && Math.abs(run.anchor-t)<=GROUP_GAP_MS){ run.rows.push(r); return; }
+    run={rows:[r], anchor:t}; out.push(run);
   });
   return out.map(g=>({rows:g.rows, group:g.rows.length>1}));
 }

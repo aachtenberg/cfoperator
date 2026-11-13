@@ -398,7 +398,13 @@ function closeDetail(){ const d=document.getElementById('detail'); disconnectCoc
 // goes to "false" and trapFocus() stops holding Tab. Maximized, it covers the
 // page again and is modal again.
 const DOCK_MQ='(min-width: 1280px)';
-function docked(){ try{ return !!(window.matchMedia && window.matchMedia(DOCK_MQ).matches) && !MAX; }catch(e){ return false; } }
+//
+// A terminal is the other way to stop being docked: #detail.wide runs the
+// pane over the list so 80 columns fit, and a list you cannot see must not
+// be in the tab order. WIDE follows the class (mountCockpit sets both,
+// disconnectCockpit clears both) and each calls applyModal().
+var WIDE=false;
+function docked(){ try{ return !!(window.matchMedia && window.matchMedia(DOCK_MQ).matches) && !MAX && !WIDE; }catch(e){ return false; } }
 function applyModal(){ const d=document.getElementById('detail'); if(d&&d.setAttribute) d.setAttribute('aria-modal', docked()?'false':'true'); }
 try{ const mq=window.matchMedia?window.matchMedia(DOCK_MQ):null; if(mq&&mq.addEventListener) mq.addEventListener('change', applyModal); }catch(e){}
 function restoreFocus(){
@@ -662,6 +668,8 @@ async function triage(id, action){
       body: JSON.stringify({action, note})});
     if(!res.ok){ toast('triage failed: '+res.status+(res.status===403?' (admin only)':''),'err'); return; }
   }catch(e){ toast('triage failed','err'); return; }
+  // The verdict takes the row out of the rail's Inbox count; say so now, not on its next timer.
+  if(window.CFOP&&window.CFOP.refreshStatus) window.CFOP.refreshStatus();
   await detail(id); load();
 }
 // ---- the browser cockpit (CFOP-59) ------------------------------------
@@ -752,7 +760,7 @@ function mountCockpit(id, s){
     </div>
     <div id="term"></div>
     <div class="cp-status" id="cp-status">connecting…</div>`;
-  document.getElementById('detail').classList.add('wide');
+  document.getElementById('detail').classList.add('wide'); WIDE=true; applyModal();
   COCKPIT.id=id; COCKPIT.expires=s.expires_at||null; COCKPIT.lastError='';
   startCountdown();
 
@@ -823,6 +831,7 @@ function disconnectCockpit(){
   if(COCKPIT.observer){ try{ COCKPIT.observer.disconnect(); }catch(e){} COCKPIT.observer=null; }
   window.removeEventListener('resize', refit);
   const d=document.getElementById('detail'); if(d) d.classList.remove('wide');
+  WIDE=false; applyModal();
   const el=document.getElementById('cockpit'); if(el && COCKPIT.id!==null) el.innerHTML='';
   COCKPIT.id=null;
 }

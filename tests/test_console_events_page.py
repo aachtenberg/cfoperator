@@ -105,7 +105,7 @@ const tick=()=>new Promise(r=>setImmediate(r));
   if(scenario==='flow'){
     box.setFilter('status','failed'); await tick(); await tick();
     out.afterFilterFetch=fetched[fetched.length-1]; out.afterFilterUrl=urls[urls.length-1];
-    out.afterFilterRows=(els['rows'].innerHTML.match(/<tr /g)||[]).length;
+    out.afterFilterRows=(els['rows'].innerHTML.match(/<tr id="row-/g)||[]).length;
     box.setFilter('status',''); await tick(); await tick();
     out.moreHiddenWithoutCursor=els['more'].hidden;
     await box.detail('alert-2');
@@ -122,11 +122,12 @@ const tick=()=>new Promise(r=>setImmediate(r));
     out.hashAfterClose=loc.hash;
   }
   if(scenario==='paging'){
-    out.firstPageRows=(els['rows'].innerHTML.match(/<tr /g)||[]).length;
+    // Alert rows, by their id: a sweep group adds a header row of its own (CFOP-696).
+    out.firstPageRows=(els['rows'].innerHTML.match(/<tr id="row-/g)||[]).length;
     out.moreShown=!els['more'].hidden;
     await box.loadMore(); await tick();
     out.moreFetch=fetched[fetched.length-1];
-    out.rowsAfterMore=(els['rows'].innerHTML.match(/<tr /g)||[]).length;
+    out.rowsAfterMore=(els['rows'].innerHTML.match(/<tr id="row-/g)||[]).length;
     out.distinctRows=new Set((els['rows'].innerHTML.match(/data-id="([^"]+)"/g)||[])).size;
     out.moreHiddenAtEnd=els['more'].hidden;
   }

@@ -229,6 +229,9 @@ async function ack(id, btn){
     if(!res.ok){ toast('ack failed: '+res.status+(res.status===403?' (admin only)':''),'err'); if(btn) btn.disabled=false; return; }
   }catch(e){ toast('ack failed','err'); if(btn) btn.disabled=false; return; }
   toast('#'+id+' acknowledged','ok');
+  // The rail's count is its own read of the same list; without this it would
+  // stay a row ahead of the queue until its next timer.
+  if(window.CFOP&&window.CFOP.refreshStatus) window.CFOP.refreshStatus();
   load();
 }
 document.addEventListener('click', e=>{

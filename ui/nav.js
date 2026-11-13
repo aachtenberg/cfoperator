@@ -304,7 +304,10 @@
     document.addEventListener('visibilitychange', function () { if (!document.hidden) loadStatus(); });
   }
 
-  window.CFOP = { me: me, describe: describe, needsAction: needsAction };
+  // refreshStatus: a page that just changed what the card or the count shows
+  // (an Ack on Inbox, a verdict on an investigation) asks for the re-read
+  // instead of leaving the rail a minute behind the page beside it.
+  window.CFOP = { me: me, describe: describe, needsAction: needsAction, refreshStatus: loadStatus };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);

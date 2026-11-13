@@ -148,10 +148,21 @@ const tick=()=>new Promise(r=>setImmediate(r));
   byId['cfop-status']=el(); byId['cfop-inbox-count']=el();
   for(let i=0;i<6;i++) await tick();
   const status=byId['cfop-status'].innerHTML, n=byId['cfop-inbox-count'];
+  const count0=n.textContent, hidden0=n.hidden;
+  // A page that just triaged a row asks the rail to read again.
+  const before=asked.filter(u=>u==='/api/investigations?limit=80').length;
+  answers['/api/investigations?limit=80']={investigations:[{id:4,outcome:'needs_action'}]};
+  box.window.CFOP.refreshStatus();
+  for(let i=0;i<6;i++) await tick();
+  const refetched=asked.filter(u=>u==='/api/investigations?limit=80').length-before;
+  answers['/api/investigations?limit=80']={investigations:[
+    {id:1,outcome:'needs_action'},{id:2,outcome:'needs_action',triage_action:'ack'},
+    {id:3,outcome:'resolved'},{id:4,outcome:'needs_action',triage_action:null}]};
   console.log(JSON.stringify({
+    refetched, countAfterRefresh: n.textContent,
     asks: appended.length, askHref: appended[0]?appended[0].href:null,
     askName: appended[0]?appended[0].attrs['aria-label']:null,
-    count: n.textContent, countHidden: n.hidden,
+    count: count0, countHidden: hidden0,
     needs: box.window.CFOP.needsAction(answers['/api/investigations?limit=80'].investigations).map(r=>r.id),
     connected: status.indexOf('Connected')>=0 && status.indexOf('Disconnected')<0,
     disconnected: status.indexOf('Disconnected')>=0,
@@ -190,6 +201,19 @@ def test_the_inbox_count_is_untriaged_needs_action(tmp_path):
     r = _rail(tmp_path, "/events")
     assert r["needs"] == [1, 4]
     assert r["count"] == "2" and r["countHidden"] is False
+
+
+def test_a_triage_refreshes_the_rail_count(tmp_path):
+    """The rail's count is its own read on a 60 s timer. Ack on Inbox (and a
+    verdict in the investigations pane) changes what it should say, so both
+    ask for the re-read; otherwise the number beside "Inbox" sits one ahead of
+    the queue next to it. Bugbot on #374."""
+    r = _rail(tmp_path, "/inbox")
+    assert r["refetched"] == 1 and r["countAfterRefresh"] == "1"
+    ack = re.search(r"async function ack\(id, btn\)\{.*?\n\}", read("inbox.html"), re.S).group(0)
+    assert "CFOP.refreshStatus()" in ack, "Inbox's Ack does not refresh the rail"
+    triage = re.search(r"async function triage\(id, action\)\{.*?\n\}", read("investigations.html"), re.S).group(0)
+    assert "CFOP.refreshStatus()" in triage, "a verdict in the pane does not refresh the rail"
 
 
 def test_the_inbox_page_uses_the_rail_s_rule():
@@ -233,6 +257,49 @@ def test_a_docked_pane_lowers_aria_modal_and_trap_focus_respects_it():
     assert "getAttribute('aria-modal')==='false'" in trap
 
 
+_DOCK_STUB = r"""
+const fs=require('fs'), vm=require('vm');
+const page=fs.readFileSync(process.argv[2],'utf8');
+const a=page.indexOf("const DOCK_MQ="), b=page.indexOf("try{ const mq=window.matchMedia");
+const detail={attrs:{}, setAttribute(k,v){this.attrs[k]=v;}};
+const box={window:{matchMedia:()=>({matches:process.argv[3]==='wide-screen'})},
+  document:{getElementById:()=>detail}, MAX:false};
+vm.createContext(box);
+vm.runInContext('var MAX=false;'+page.slice(a,b)+';globalThis.s=(m,w)=>{MAX=m;WIDE=w;applyModal();return document.getElementById("detail").attrs["aria-modal"];}',box);
+console.log(JSON.stringify({plain:box.s(false,false), max:box.s(true,false), terminal:box.s(false,true)}));
+"""
+
+
+@pytest.mark.parametrize("screen,expected", [
+    # Beside the list: not modal. Maximized, or run over the list by an open
+    # terminal: nothing beside it is visible, so it is modal again.
+    ("wide-screen", {"plain": "false", "max": "true", "terminal": "true"}),
+    ("narrow-screen", {"plain": "true", "max": "true", "terminal": "true"}),
+])
+def test_the_pane_is_modal_whenever_it_covers_the_list(tmp_path, screen, expected):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    stub = tmp_path / "dock.js"
+    stub.write_text(_DOCK_STUB, encoding="utf-8")
+    out = subprocess.run([node, str(stub), str(UI / "investigations.html"), screen],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == expected
+
+
+def test_opening_and_closing_a_terminal_re_decides_modality():
+    """#detail.wide runs the pane over the list at any width. The class and
+    the flag docked() reads move together, and each move calls applyModal(),
+    or aria-modal keeps saying "false" over a list nobody can see and Tab
+    walks its 80 hidden rows. Bugbot on #374."""
+    page = read("investigations.html")
+    mount = re.search(r"function mountCockpit\(id, s\)\{.*?\n\}", page, re.S).group(0)
+    assert re.search(r"classList\.add\('wide'\);\s*WIDE=true;\s*applyModal\(\)", mount)
+    drop = re.search(r"function disconnectCockpit\(\)\{.*?\n\}", page, re.S).group(0)
+    assert re.search(r"classList\.remove\('wide'\);\s*WIDE=false;\s*applyModal\(\)", drop)
+
+
 # --- events: grouping a sweep's burst -------------------------------------
 
 _GROUP_STUB = r"""
@@ -242,13 +309,23 @@ const a=page.indexOf('const GROUP_GAP_MS'), b=page.indexOf('function hhmm(');
 const box={console,document:{},localStorage:{getItem(){return null;},setItem(){}}};
 vm.createContext(box); vm.runInContext(common,box); vm.runInContext(page.slice(a,b)+';globalThis.groupRuns=groupRuns;',box);
 const row=(id,source,at)=>({alert_id:id,source,latest_event_at:at});
-const runs=box.groupRuns([
-  row('a','cfoperator-sweep','2026-11-12T19:52:10Z'), row('b','cfoperator-sweep','2026-11-12T19:52:00Z'),
-  row('c','cfoperator-sweep','2026-11-12T19:51:30Z'),
-  row('d','alertmanager','2026-11-12T19:14:00Z'),
-  row('e','cfoperator-sweep','2026-11-12T13:55:00Z'),
-  row('f','cfoperator-sweep','2026-11-12T13:40:00Z'), row('g','cfoperator-sweep','2026-11-12T13:39:00Z')]);
-console.log(JSON.stringify(runs.map(g=>[g.group, g.rows.map(r=>r.alert_id).join('')])));
+const show=rows=>box.groupRuns(rows).map(g=>[g.group, g.rows.map(r=>r.alert_id).join('')]);
+const S='cfoperator-sweep';
+console.log(JSON.stringify({
+  basic: show([
+    row('a',S,'2026-11-12T19:52:10Z'), row('b',S,'2026-11-12T19:52:00Z'), row('c',S,'2026-11-12T19:51:30Z'),
+    row('d','alertmanager','2026-11-12T19:14:00Z'),
+    row('e',S,'2026-11-12T13:55:00Z'),
+    row('f',S,'2026-11-12T13:40:00Z'), row('g',S,'2026-11-12T13:39:00Z')]),
+  // Another source firing while the sweep is still posting.
+  interleaved: show([
+    row('a',S,'2026-11-12T19:52:10Z'), row('x','alertmanager','2026-11-12T19:52:05Z'),
+    row('b',S,'2026-11-12T19:52:00Z'), row('c',S,'2026-11-12T19:51:30Z')]),
+  // A sweep every four minutes: each step is inside the gap, the span is not.
+  chained: show([
+    row('a',S,'2026-11-12T12:00:00Z'), row('b',S,'2026-11-12T11:56:00Z'),
+    row('c',S,'2026-11-12T11:52:00Z'), row('d',S,'2026-11-12T11:48:00Z')])
+}));
 """
 
 
@@ -261,9 +338,15 @@ def test_a_sweep_s_burst_folds_and_a_lone_finding_does_not(tmp_path):
     out = subprocess.run([node, str(stub), str(UI / "common.js"), str(UI / "events.html")],
                          capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
-    assert json.loads(out.stdout) == [
+    got = json.loads(out.stdout)
+    assert got["basic"] == [
         [True, "abc"],    # three findings seconds apart: one sweep
         [False, "d"],     # another source is never grouped
         [False, "e"],     # a sweep finding with nothing near it is just a row
         [True, "fg"],     # 15 minutes later is a different sweep
     ]
+    # An alert from elsewhere inside the burst does not cut the sweep in two.
+    assert got["interleaved"] == [[True, "abc"], [False, "x"]]
+    # The gap is measured from the run's first row, so a group cannot span
+    # more than it: a short sweep interval must not fold the whole history.
+    assert got["chained"] == [[True, "ab"], [True, "cd"]]
