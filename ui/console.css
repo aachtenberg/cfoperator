@@ -37,6 +37,11 @@
 }
 
 * { box-sizing:border-box; }
+/* The hidden attribute means hidden. The browser's own [hidden] rule loses to
+   any author rule that sets display, and most of the kit below does (.chip,
+   .badge, .card-head, the rail's logout): without this, a hidden logout, an
+   empty count pill and Admin's "Cancel edit" all show. */
+[hidden] { display:none !important; }
 /* Controls do not inherit the page face on their own. */
 button, input, select, textarea { font-family:inherit; }
 body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);

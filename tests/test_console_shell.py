@@ -79,6 +79,20 @@ def test_the_stylesheet_fetches_nothing():
     assert "@font-face" not in css, "a webfont has to be vendored through scripts/vendor_ui.py"
 
 
+def test_the_hidden_attribute_still_hides():
+    """The kit sets display on its classes (.chip, .badge, .cfop-logout), and
+    an author display rule beats the browser's [hidden]. The pages and nav.js
+    hide things with the attribute — the logout before identity lands, the
+    Inbox count at zero, Admin's Cancel edit — so the stylesheet has to say
+    that hidden wins. Found by review on #374: all three were showing."""
+    css = CSS.read_text(encoding="utf-8")
+    assert re.search(r"(?m)^\[hidden\]\s*\{\s*display\s*:\s*none\s*!important", css), (
+        "console.css must carry [hidden]{display:none!important}; its display rules override the attribute")
+    assert ("hidden" in NAV_JS.read_text(encoding="utf-8")
+            and re.search(r"<button[^>]*class=\"chip[^>]*\bhidden\b", read("admin.html"))), (
+        "nothing relies on [hidden] any more; this guard can go with it")
+
+
 def test_login_does_not_depend_on_the_authenticated_stylesheet():
     assert "/console.css" not in read("login.html"), (
         "login.html is painted before a session exists; /console.css is behind the login")
