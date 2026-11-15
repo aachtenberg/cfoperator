@@ -293,7 +293,9 @@ of them are needed to investigate your first alert.
 
 | Endpoint | Description |
 |----------|-------------|
-| `/` | Chat UI |
+| `/` | Redirects to `/inbox`, the console's landing page |
+| `/inbox` | Everything waiting on a human |
+| `/console` | Chat UI (also opens as a floating panel from the Ask button on every other page) |
 | `/api/health` | Health check + uptime |
 | `/api/chat` | HTTP chat API (polling) |
 | `/api/sweep` | Trigger deep system sweep (POST) |

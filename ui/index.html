@@ -13,6 +13,22 @@
     <!-- toast (and the other shared helpers) — one copy, see ui/common.js. Not deferred. -->
     <script src="/common.js"></script>
     <script src="/nav.js" defer></script>
+    <!-- Embedded (CFOP-711): this page inside the Ask panel on another page
+         (nav.js asks for ?embed=1). Marked here, before the first paint, so
+         the frame never flashes a rail and a title the host already has. A
+         link in the frame that is not a new tab navigates the host page, not
+         the frame: "Defaults and seats in Admin" opened in the panel would be
+         Admin, rail and all, 480px wide. Its own small block with an id: the
+         page's script is the one further down, and stays the page's first
+         bare script tag, which is how the chat tests find it. -->
+    <script id="embed-mode">
+        if (/(?:^|[?&])embed=1(?:&|$)/.test(location.search)) {
+            document.documentElement.classList.add('embed');
+            const base = document.createElement('base');
+            base.target = '_top';
+            document.head.appendChild(base);
+        }
+    </script>
     <!-- Tokens, the rail and the shared kit: one copy, see ui/console.css. -->
     <link rel="stylesheet" href="/console.css">
     <style>
@@ -62,6 +78,18 @@
         }
         header .page-title { font-family: var(--font-ui); font-size: 18px; }
         header .llm-switcher { margin-left: auto; }
+
+        /* Embedded in the Ask panel (CFOP-711). The host page has the rail,
+           a title and the agent's status; the frame keeps the conversation
+           and the controls that act on it. The sidebar lies over the chat
+           when opened: at the panel's width, beside it would leave the chat
+           a third of the frame. */
+        html.embed body { padding-left: 0; }
+        html.embed #cfop-nav, html.embed header .page-title, html.embed .status-bar { display: none; }
+        html.embed header { height: 44px; padding: 0 10px; gap: 8px; }
+        html.embed .main-layout { position: relative; }
+        html.embed .sidebar { position: absolute; top: 0; bottom: 0; left: 0; z-index: 5;
+            max-width: 86%; box-shadow: 8px 0 24px rgba(0,0,0,.5); }
 
         /* Controls do not inherit a family from body (a bare <button> renders in
            the browser's own), so the element rule is what makes them match. */

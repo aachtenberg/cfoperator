@@ -114,6 +114,28 @@ a:hover { color:var(--link-hover); }
 .cfop-ask:hover .tip, .cfop-ask:focus-visible .tip { opacity:1; }
 @media (prefers-reduced-motion: reduce) { .cfop-ask, .cfop-ask .tip { transition:none; } }
 
+/* The chat, floating over the page (CFOP-711): what the Ask button and a
+   drawer's "Ask about this" open. Above the drawer (50), so a question about
+   the open row sits on top of it; below the toasts (60), which share this
+   corner and must not be hidden behind it. The frame is the chat page in its
+   embed mode. */
+.cfop-chat { position:fixed; right:28px; bottom:96px; z-index:55; display:flex; flex-direction:column;
+  width:min(480px, calc(100vw - 32px)); height:min(700px, calc(100vh - 124px)); overflow:hidden;
+  background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius);
+  box-shadow:0 16px 48px rgba(0,0,0,.6); font-family:var(--font-ui); }
+.cfop-chat-head { display:flex; align-items:center; gap:4px; min-height:44px; padding:0 8px 0 14px; flex:none;
+  border-bottom:1px solid var(--border-subtle); font-size:14px; font-weight:600; color:var(--text-primary); }
+.cfop-chat-head .t { display:flex; align-items:center; gap:8px; flex:1; min-width:0; }
+.cfop-chat-head .t svg { width:18px; height:18px; color:var(--accent); flex:none; }
+.cfop-chat-head a, .cfop-chat-head button { display:grid; place-items:center; width:32px; height:32px; flex:none;
+  border:0; border-radius:var(--radius-sm); background:transparent; color:var(--text-secondary); cursor:pointer; }
+.cfop-chat-head a:hover, .cfop-chat-head button:hover { background:var(--bg-tertiary); color:var(--text-primary); }
+.cfop-chat-head a:focus-visible, .cfop-chat-head button:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
+.cfop-chat-head a svg, .cfop-chat-head button svg { width:16px; height:16px; }
+.cfop-chat-frame { flex:1; width:100%; min-height:0; border:0; background:var(--bg-primary); }
+.cfop-ask[aria-expanded="true"] { background:var(--accent-hover); }
+.cfop-ask[aria-expanded="true"] .tip { display:none; }
+
 /* Below the width where a 232px rail leaves too little page, keep the icons
    and drop the words — what the header nav did before it was a rail. */
 @media (max-width: 900px) {
@@ -125,6 +147,7 @@ a:hover { color:var(--link-hover); }
   .cfop-nav a .badge { position:absolute; top:2px; right:0; padding:0 5px; font-size:10px; line-height:15px; }
   .cfop-id { padding:0; justify-content:center; }
   .cfop-ask { right:16px; bottom:16px; }
+  .cfop-chat { right:16px; bottom:84px; height:min(700px, calc(100vh - 100px)); }
 }
 
 /* ---- page frame ---------------------------------------------------------- */
