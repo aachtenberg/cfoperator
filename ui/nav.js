@@ -123,12 +123,23 @@
   }
 
   /* ---- what "waiting on a human" means --------------------------------
-   * An investigation the agent ended on needs_action that no operator has
-   * triaged yet. One rule, here, because the rail's count and the Inbox
-   * page's queue must be the same number: the page calls CFOP.needsAction. */
+   * An investigation the agent ended on needs_action, that no operator has
+   * triaged, and whose recommendation nobody has decided yet. One rule, here,
+   * because the rail's count and the Inbox page's queue must be the same
+   * number: the page calls CFOP.needsAction.
+   *
+   * The third clause is CFOP-709. A remediation that was resolved or rejected
+   * IS the decision on that investigation's recommendation, and a filed one
+   * is in the tracker (with its own card on Inbox); asking for an Ack on top
+   * asked for the same decision twice. Measured the day it changed: 39 rows
+   * in the queue, 20 resolved, 12 rejected, 2 filed, 5 actually undecided —
+   * and not one had ever been acked. remediation_status is on the list row
+   * (the server links it); a row without one has no remediation and waits. */
+  var SETTLED = { resolved: true, rejected: true, filed: true };
   function needsAction(rows) {
     return (rows || []).filter(function (r) {
-      return r && r.outcome === 'needs_action' && !r.triage_action;
+      return r && r.outcome === 'needs_action' && !r.triage_action &&
+        !SETTLED[r.remediation_status];
     });
   }
 

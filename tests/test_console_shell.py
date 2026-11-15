@@ -162,7 +162,12 @@ const answers={
   '/api/sweep-reports?limit=1':{reports:[{id:2394,swept_at:'2026-11-12T19:52:00Z'}]},
   '/api/investigations?limit=80':{investigations:[
     {id:1,outcome:'needs_action'},{id:2,outcome:'needs_action',triage_action:'ack'},
-    {id:3,outcome:'resolved'},{id:4,outcome:'needs_action',triage_action:null}]}
+    {id:3,outcome:'resolved'},{id:4,outcome:'needs_action',triage_action:null},
+    {id:5,outcome:'needs_action',remediation_status:'resolved'},
+    {id:6,outcome:'needs_action',remediation_status:'rejected'},
+    {id:7,outcome:'needs_action',remediation_status:'filed'},
+    {id:8,outcome:'needs_action',remediation_status:'needs-human'},
+    {id:9,outcome:'needs_action',remediation_status:null}]}
 };
 const box={console,window:{location:{pathname,href:''}},
   document:{readyState:'complete',hidden:false,head:{appendChild(){}},
@@ -188,7 +193,12 @@ const tick=()=>new Promise(r=>setImmediate(r));
   const refetched=asked.filter(u=>u==='/api/investigations?limit=80').length-before;
   answers['/api/investigations?limit=80']={investigations:[
     {id:1,outcome:'needs_action'},{id:2,outcome:'needs_action',triage_action:'ack'},
-    {id:3,outcome:'resolved'},{id:4,outcome:'needs_action',triage_action:null}]};
+    {id:3,outcome:'resolved'},{id:4,outcome:'needs_action',triage_action:null},
+    {id:5,outcome:'needs_action',remediation_status:'resolved'},
+    {id:6,outcome:'needs_action',remediation_status:'rejected'},
+    {id:7,outcome:'needs_action',remediation_status:'filed'},
+    {id:8,outcome:'needs_action',remediation_status:'needs-human'},
+    {id:9,outcome:'needs_action',remediation_status:null}]};
   console.log(JSON.stringify({
     refetched, countAfterRefresh: n.textContent,
     asks: appended.length, askHref: appended[0]?appended[0].href:null,
@@ -225,13 +235,20 @@ def test_the_rail_renders_two_groups_and_the_brand(tmp_path):
     assert r["brandLinksInbox"]
 
 
-def test_the_inbox_count_is_untriaged_needs_action(tmp_path):
+def test_the_inbox_count_is_undecided_needs_action(tmp_path):
     """The rail's number and the Inbox queue are one rule: an investigation the
-    agent ended on needs_action that nobody has triaged. A triaged one is no
-    longer waiting on anyone and must not keep the count up."""
+    agent ended on needs_action, that nobody has triaged, and whose remediation
+    nobody has decided. A triaged one is no longer waiting on anyone and must
+    not keep the count up.
+
+    Nor is one whose remediation was resolved, rejected or filed (CFOP-709):
+    that IS the decision, and asking for an Ack on top asked for it twice --
+    34 of the 39 rows in the live queue were these, and none had been acked.
+    A remediation that is still open (needs-human here) leaves the row
+    waiting, and so does having no remediation at all."""
     r = _rail(tmp_path, "/events")
-    assert r["needs"] == [1, 4]
-    assert r["count"] == "2" and r["countHidden"] is False
+    assert r["needs"] == [1, 4, 8, 9]
+    assert r["count"] == "4" and r["countHidden"] is False
 
 
 def test_a_triage_refreshes_the_rail_count(tmp_path):

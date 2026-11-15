@@ -108,8 +108,9 @@
 // list, the pipeline flags and the last sweep, read the way their own pages
 // read them and cut down to the rows that want a decision.
 //
-// "Needs action" is CFOP.needsAction (nav.js): outcome needs_action and not
-// yet triaged. The rail's count is the same function over the same request,
+// "Needs action" is CFOP.needsAction (nav.js): outcome needs_action, not yet
+// triaged, and its remediation not already resolved, rejected or filed
+// (CFOP-709). The rail's count is the same function over the same request,
 // so the number beside "Inbox" is the length of this queue.
 const LIMIT=80;               // the investigations page's window; the tiles count within it
 const QUEUE_MAX=25;           // the page is a queue, not the archive — "Open all" is the archive
@@ -162,6 +163,9 @@ async function load(){
   document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
 
+// nav.js is the rule. Without it (the script failed to load) the page falls
+// back to the broader rule from before CFOP-709: that can list a row whose
+// remediation is already decided, and it cannot hide one that is not.
 function queue(){ return (window.CFOP&&window.CFOP.needsAction)?window.CFOP.needsAction(INV):INV.filter(r=>r.outcome==='needs_action'&&!r.triage_action); }
 function count(n, varname){ return n?badge(String(n), varname):''; }
 function kpi(label, n, tag, varname, href){
