@@ -331,7 +331,7 @@ async function detail(id){
       <button class="chip" onclick="showReject(${r.id})">Reject</button>
       ${r.remediation_class==='manual'?'':`<button class="chip" onclick="showReclassify(${r.id})">Reclassify</button>`}
       ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})">Investigation #${r.investigation_id}</button>`:''}
-      <a class="chip" href="/?remediation=${Number(r.id)}" title="open the console chat on this row">Ask about this</a>
+      <a class="chip" href="/console?remediation=${Number(r.id)}" title="open the console chat on this row">Ask about this</a>
     </div>
     ${r.remediation_class==='manual'?`<div class="muted" style="margin:0 0 8px">manual = human-only work: the executor has nothing to run. Reclassify it (gitops-patch / k8s-action / node-action) for the executor, or do it by hand and Resolve.</div>`:''}
     ${r.status===FILED?`<div class="muted" style="margin:0 0 8px">${trackerCopy(r)}</div>`:''}

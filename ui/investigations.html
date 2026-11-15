@@ -600,7 +600,7 @@ function actionBar(r){
       <button type="button" class="chip lg primary" onclick="triage(${id},'resolved')">Resolve</button>
       <button type="button" class="chip lg" onclick="triage(${id},'ack')">Acknowledge</button>
       <span class="rule" aria-hidden="true"></span>
-      <a class="chip lg" href="/?investigation=${id}" title="open the console chat on this investigation">${ASK_MARK}Ask about this</a>
+      <a class="chip lg" href="/console?investigation=${id}" title="open the console chat on this investigation">${ASK_MARK}Ask about this</a>
       <button type="button" class="chip lg" id="explain-btn" aria-expanded="false" aria-controls="explain" onclick="toggleExplain(${id})" title="how this investigation got to its answer">Explain</button>
       ${open}
     </div>`;

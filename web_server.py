@@ -366,8 +366,29 @@ class WebServer:
         """
 
         # Static UI
+        #
+        # The console opens on Inbox (CFOP-710): what is waiting on a person
+        # is the first thing to see, and the chat is one click away on every
+        # page. "/" used to BE the chat, and /?investigation=<id> and
+        # /?remediation=<id> are how a drawer handed its row to it — links
+        # that are in old messages and bookmarks. So "/" redirects: a
+        # hand-off goes to the chat with the row it named, anything else to
+        # Inbox. Only the two keys the chat reads are carried, digits only,
+        # so nothing a caller put in the query string reaches the Location
+        # header as written. Login's default `next` is "/", so signing in
+        # lands on Inbox with no change there.
         @self.app.route('/')
         def index():
+            handoff = [(k, request.args.get(k, '')) for k in ('investigation', 'remediation')]
+            handoff = [(k, v) for k, v in handoff if v.isascii() and v.isdigit()]
+            if handoff:
+                return redirect('/console?' + '&'.join(f'{k}={v}' for k, v in handoff), code=302)
+            return redirect('/inbox', code=302)
+
+        # The chat. Its own path since CFOP-710; the page is still
+        # ui/index.html.
+        @self.app.route('/console')
+        def console_page():
             return send_from_directory('ui', 'index.html')
 
         # The shared console header (nav, active-page state, identity, logout).
@@ -395,9 +416,8 @@ class WebServer:
             return send_from_directory('ui', 'console.css', mimetype='text/css')
 
         # Inbox (CFOP-696): everything waiting on a human, on one page. It
-        # reads the same APIs the list pages do and has none of its own. Not
-        # at "/": /?investigation= and /?remediation= are how a drawer hands
-        # its row to the chat, and the chat stays there.
+        # reads the same APIs the list pages do and has none of its own. It is
+        # where "/" lands (CFOP-710, above) and keeps its own path.
         @self.app.route('/inbox')
         def inbox_page():
             return send_from_directory('ui', 'inbox.html')

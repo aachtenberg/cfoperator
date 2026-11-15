@@ -221,8 +221,10 @@ that `<style>`; `test_console_shell.py` fails a page that skips the link or
 restates a shared token. `login.html` cannot use it (it is behind the login).
 The font stacks name Inter and JetBrains Mono and load neither.
 
-`/` is the chat and stays the chat: `/?investigation=` and `/?remediation=` are
-how a drawer hands its row over. Inbox, first in the rail, is `/inbox`.
+The console opens on Inbox (CFOP-710): `/` redirects to `/inbox`. The chat is
+`/console`, and `/console?investigation=` and `/console?remediation=` are how a
+drawer hands its row over. The old `/?investigation=` form still works; `/`
+forwards it. Do not put a page at `/`.
 
 Pages that need the current user should `await CFOP.me()` rather than fetching
 `/api/auth/me` again — `nav.js` already made that call. Since `nav.js` is

@@ -2325,8 +2325,9 @@
             }
         });
 
-        // Handed a row by another page (CFOP-109, CFOP-113): /?remediation=<id>
-        // or /?investigation=<id> starts a fresh session on that row and asks
+        // Handed a row by another page (CFOP-109, CFOP-113): ?remediation=<id>
+        // or ?investigation=<id> on this page's address (/console since
+        // CFOP-710) starts a fresh session on that row and asks
         // the first question itself; the saved session is left alone rather
         // than appended to. The param is stripped by askAbout* once the
         // question is sent.

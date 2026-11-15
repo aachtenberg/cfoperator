@@ -36,12 +36,15 @@
   // caller is an admin (or auth is disabled). Account stays for every role —
   // that is where members change their password and manage their own tokens.
   //
-  // "/" is the chat and stays the chat: /?investigation= and /?remediation=
-  // are how a drawer hands its row over, so Inbox lives at /inbox.
+  // The console opens on Inbox and the chat is /console (CFOP-710). "/" is no
+  // page of its own: the server redirects it to /inbox, or to /console with
+  // the row when it carries an old /?investigation= or /?remediation=
+  // hand-off.
+  var CHAT = '/console';
   var SECTIONS = [
     { href: '/inbox', label: 'Inbox', count: true,
       icon: '<path d="M3 13h5l2 3h4l2-3h5M5 5h14l2 8v6H3v-6z"/>' },
-    { href: '/', label: 'Console',
+    { href: '/console', label: 'Console',
       icon: '<path d="M4 6l5 5-5 5M12 18h8"/>' },
     { href: '/investigations', label: 'Investigations',
       icon: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/>' },
@@ -90,8 +93,9 @@
    * hash — so it is normalised before matching and /account/ lands on /account.
    *
    * Matching is on a path-segment boundary rather than a bare prefix, so
-   * /account cannot claim a sibling like /accountsomething. "/" is exact-only
-   * for the same reason: it is a prefix of every other section.
+   * /account cannot claim a sibling like /accountsomething. A section at "/"
+   * would be exact-only for the same reason (it is a prefix of every other
+   * one); none is there since the chat moved to /console (CFOP-710).
    *
    * Longest match wins. Matching walks every section (including adminOnly) so
    * /admin is recognised even before identity arrives. */
@@ -287,10 +291,10 @@
    * itself. A link, not a button — it is navigation. */
   function mountAsk() {
     if (!document.body || !document.body.appendChild) return;
-    if (activeHref(window.location.pathname) === '/') return;
+    if (activeHref(window.location.pathname) === CHAT) return;
     var a = document.createElement('a');
     a.className = 'cfop-ask';
-    a.href = '/';
+    a.href = CHAT;
     a.setAttribute('aria-label', 'Ask CFOperator');
     a.innerHTML = svg(BRAND_MARK) + '<span class="tip" aria-hidden="true">Ask CFOperator</span>';
     document.body.appendChild(a);
