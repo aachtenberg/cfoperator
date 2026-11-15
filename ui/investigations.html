@@ -201,7 +201,7 @@
   <!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit.
        The rows are laid out as items, so the header row reads as a strip of sort buttons. -->
   <table>
-    <thead><tr><th data-sort="id">ID</th><th data-sort="outcome">Outcome</th><th data-sort="trigger">Trigger</th><th data-sort="llm">LLM</th><th data-sort="remediation">Remediation</th><th data-sort="duration">Duration</th><th data-sort="started">Started</th></tr></thead>
+    <thead><tr><th data-sort="id">ID</th><th data-sort="outcome">Outcome</th><th data-sort="trigger" title="What started the investigation: the alert or the sweep finding, in its own words.">Trigger</th><th data-sort="llm" title="The model that wrote the report.">LLM</th><th data-sort="remediation" title="The queue row this investigation's recommendation became, by its id.">Remediation</th><th data-sort="duration">Duration</th><th data-sort="started">Started</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
   <div id="empty" class="empty" hidden>No investigations match this filter.</div>
@@ -273,7 +273,7 @@ function safeUrl(u){ const s=String(u==null?'':u).trim(); if(!s) return '';
 function linkedRem(r){ return REMS[r.id] || (r.remediation_id ? (REMID[r.remediation_id]||{id:r.remediation_id,status:''}) : null); }
 function remLink(r){
   const m=linkedRem(r);
-  if(m) return `<a href="/remediations#${m.id}" onclick="event.stopPropagation()">#${m.id}${m.status?' '+esc(m.status):''}</a>`;
+  if(m) return `<a href="/remediations#${m.id}"${glossAttr('remediation',m.status)} onclick="event.stopPropagation()">#${m.id}${m.status?' '+esc(m.status):''}</a>`;
   const pr=safeUrl(r.remediation_pr_url);
   if(pr) return `<a href="${esc(pr)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">PR ↗</a>`;
   return r.outcome==='needs_action' ? 'no remediation' : '';
@@ -286,7 +286,7 @@ function remLink(r){
 function remDrawerLine(r){
   const f=r.findings||{};
   const m=REMS[r.id] || (f.remediation_id ? (REMID[f.remediation_id]||{id:f.remediation_id, status:''}) : null);
-  if(m) return `<a class="badge" style="--tone:var(--purple)" href="/remediations#${m.id}">remediation #${m.id}${m.status?' '+esc(m.status):''}</a>`;
+  if(m) return `<a class="badge" style="--tone:var(--purple)" href="/remediations#${m.id}"${glossAttr('remediation',m.status)}>remediation #${m.id}${m.status?' '+esc(m.status):''}</a>`;
   const pr=(f.remediation_proposal||{}).remediation_pr||{};
   const prUrl=pr.status==='opened'?safeUrl(pr.html_url):'';
   if(prUrl) return `<a class="mono" href="${esc(prUrl)}" target="_blank" rel="noopener noreferrer">PR opened ↗</a>`;
@@ -300,7 +300,7 @@ function similarBlock(f){
   if(!s.length) return '';
   return `<section class="pcard" aria-label="Similar past investigations"><div class="hd"><h3>Seen before</h3><span class="muted">${s.length} similar</span></div><div class="bd">`+s.map(p=>
     `<div class="sim">${p.id!=null?`<button type="button" onclick="detail(${Number(p.id)})">#${Number(p.id)}</button>`:''}`+
-    `${badge(label(p.outcome||'').toLowerCase(),OC[p.outcome]||'--text-muted')}<span class="t" title="${esc(p.trigger||'')}">${esc((p.trigger||'').slice(0,110))}</span>`+
+    `${badge(label(p.outcome||'').toLowerCase(),OC[p.outcome]||'--text-muted',gloss('outcome',p.outcome))}<span class="t" title="${esc(p.trigger||'')}">${esc((p.trigger||'').slice(0,110))}</span>`+
     `<span class="s">${Number(p.similarity||0).toFixed(2)} match</span></div>`).join('')+`</div></section>`;
 }
 // The model that wrote the report (backend/model). Absence means the row
@@ -336,7 +336,7 @@ function paint(){
     return `
     <tr id="row-${r.id}" tabindex="0"${r.id===OPEN?' aria-current="true"':''} onclick="detail(${r.id})" onkeydown="rowKey(event,${r.id})">
       <td class="id mono">#${r.id}</td>
-      <td class="oc">${badge(label(r.outcome||'').toLowerCase(), OC[r.outcome]||'--text-muted')}${r.triage_action?badge(r.triage_action,'--accent'):''}</td>
+      <td class="oc">${badge(label(r.outcome||'').toLowerCase(), OC[r.outcome]||'--text-muted', gloss('outcome',r.outcome))}${r.triage_action?badge(r.triage_action,'--accent',gloss('triage',r.triage_action)):''}</td>
       <td class="when mono">${fmtTs(r.started_at)}</td>
       <td class="trig">${esc(r.trigger||'').slice(0,140)}</td>
       <td class="meta mono">${meta||'—'}</td></tr>`; }).join('');
@@ -358,7 +358,10 @@ function searchInput(v){ Q=String(v||'').trim(); paint(); }
 // span it replaced was not.
 function chip(value, text, n){
   const on=filter===value;
-  return `<button type="button" class="tab" aria-pressed="${on}" onclick="setF('${value}')">${text}<span class="n">${n}</span></button>`;
+  // What the outcome means (CFOP-707, gloss in common.js). "Triaged" is not
+  // an outcome: it is the rows an operator has put a verdict on.
+  const tip=value==='__triaged'?' title="Investigations an operator has resolved or acknowledged, whatever the agent concluded."':glossAttr('outcome',value);
+  return `<button type="button" class="tab" aria-pressed="${on}"${tip} onclick="setF('${value}')">${text}<span class="n">${n}</span></button>`;
 }
 // Rows are focusable rather than links (CFOP-94): a fragment link would push a
 // history entry per row, which the replaceState decision below exists to
@@ -483,7 +486,7 @@ async function detail(id, opts){
   d.innerHTML=`<div class="pane">
     <div class="p-head">
       <h2 id="detail-title">${esc(title)}${copyIcon('investigation title',{text:title+(r.trigger?' — '+r.trigger:'')})}</h2>
-      ${badge(label(r.outcome||'').toLowerCase(),OC[r.outcome]||'--text-muted')}
+      ${badge(label(r.outcome||'').toLowerCase(),OC[r.outcome]||'--text-muted',gloss('outcome',r.outcome))}
       <span class="end">${maxButton()}<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button></span>
     </div>
     <p class="trigger mono"><span id="trigger-text">${esc(r.trigger)}</span>${copyIcon('trigger',{from:'trigger-text'})}</p>
@@ -594,11 +597,11 @@ function reportBlock(f){
 const ASK_MARK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.35-5.65M20 4v4h-4"/><path d="M12 7.6l1.1 3.3 3.3 1.1-3.3 1.1-1.1 3.3-1.1-3.3-3.3-1.1 3.3-1.1z" fill="currentColor" stroke-width="1"/></svg>';
 function actionBar(r){
   const id=Number(r.id);
-  const open=(ADMIN&&r.attach_command)?`<button type="button" class="chip lg" id="open-cockpit" onclick="openCockpit(${id})">Open cockpit</button>`:'';
+  const open=(ADMIN&&r.attach_command)?`<button type="button" class="chip lg" id="open-cockpit" onclick="openCockpit(${id})" title="Starts a session on this investigation and opens its terminal here, beside the findings.">Open cockpit</button>`:'';
   return `<div class="p-actions">
       <input id="tn-${id}" aria-label="Resolution note" placeholder="Resolution note (optional)">
-      <button type="button" class="chip lg primary" onclick="triage(${id},'resolved')">Resolve</button>
-      <button type="button" class="chip lg" onclick="triage(${id},'ack')">Acknowledge</button>
+      <button type="button" class="chip lg primary" onclick="triage(${id},'resolved')" title="Record your verdict that this is resolved, with the note. The agent's own outcome is kept, and the row stops waiting in the Inbox.">Resolve</button>
+      <button type="button" class="chip lg" onclick="triage(${id},'ack')" title="Record that you have seen this and nothing more is needed here. The agent's own outcome is kept, and the row stops waiting in the Inbox.">Acknowledge</button>
       <span class="rule" aria-hidden="true"></span>
       <a class="chip lg" href="/console?investigation=${id}" title="open the console chat on this investigation">${ASK_MARK}Ask about this</a>
       <button type="button" class="chip lg" id="explain-btn" aria-expanded="false" aria-controls="explain" onclick="toggleExplain(${id})" title="how this investigation got to its answer">Explain</button>
@@ -613,7 +616,7 @@ function actionBar(r){
 function attachBlock(r){
   const cmd=r.attach_command;
   if(!cmd) return '';
-  return `<div class="prow"><span class="k">take over</span><span><code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>${copyIcon('attach command',{from:'attach-cmd'})}</span></div>
+  return `<div class="prow"><span class="k" title="A command to run in a terminal: it attaches a session to this investigation, with its findings loaded.">take over</span><span><code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>${copyIcon('attach command',{from:'attach-cmd'})}</span></div>
     <div class="cp-note" id="cockpit-note"></div>`;
 }
 // Cockpit sessions (CFOP-37) — what humans worked out against this
@@ -645,7 +648,7 @@ function sessionsBlock(r){
 // investigation over by hand. The verdict buttons are in the action bar.
 function triageBlock(r){
   const act=r.triage_action;
-  const state=act?`${badge(act,'--accent')}${r.operator_notes?' <span class="muted">'+esc(r.operator_notes)+'</span>':''}`
+  const state=act?`${badge(act,'--accent',gloss('triage',act))}${r.operator_notes?' <span class="muted">'+esc(r.operator_notes)+'</span>':''}`
                  :'<span style="color:#fbbf24">not triaged</span>';
   return `<section class="pcard" aria-label="Triage"><div class="hd"><h3>Triage</h3></div><div class="bd">
     <div class="prow"><span class="k">operator</span><span>${state}</span></div>

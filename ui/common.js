@@ -6,7 +6,9 @@
  * durations. This is the one copy. Served from /common.js (see web_server.py),
  * same posture as nav.js: no imports, no bundler, no outbound network.
  *
- * Unlike nav.js this is NOT deferred. It touches no DOM at load, and the
+ * Unlike nav.js this is NOT deferred. It touches no DOM at load — the one
+ * thing it does there is register the tooltip's listeners on document
+ * (CFOP-707, bindTips below) — and the
  * pages' own inline scripts are not deferred either — they call these at top
  * level (trapFocus on the drawer, the first paint() whenever the initial
  * fetch resolves), so it has to be there before the page script runs:
@@ -31,8 +33,10 @@ function color(v){ return (getComputedStyle(document.documentElement).getPropert
 // --tone and console.css derives the tint and the text from it, so a badge
 // is one declaration here and one rule there; the resolved value rather than
 // var(--x), so an unknown name still lands on the grey fallback.
-function badge(text, varname){ const c=color(varname);
-  return `<span class="badge" style="--tone:${c}">${esc(text)||'—'}</span>`; }
+// tip, when given, is the badge's title: what the state means, for the
+// shared tooltip below (CFOP-707). A page passes it from its own vocabulary.
+function badge(text, varname, tip){ const c=color(varname);
+  return `<span class="badge" style="--tone:${c}"${tip?` title="${esc(tip)}"`:''}>${esc(text)||'—'}</span>`; }
 
 // ---- timestamps (CFOP-412) -------------------------------------------------
 // Server stamps come in three shapes: the knowledge base's bare
@@ -280,6 +284,253 @@ function renderMarkdown(text) {
     return esc(s);
   }
 }
+
+// ---- tooltips (CFOP-707) ---------------------------------------------------
+// One tooltip for the whole console. A page writes title="..." as it always
+// has: that is the accessible description at rest, and it still works if this
+// script never runs. What this adds is the presentation. The browser's own
+// tooltip waits about a second, never appears for a keyboard user and cannot
+// be styled, which is why nobody found out what "reap" does by hovering it.
+//
+// One element, position:fixed from the anchor's rect, so a card's
+// overflow:clip, a table or the drawer's scroll box cannot cut it off. Text
+// only: some titles carry what a model wrote (a trigger, a host), and nothing
+// here is ever parsed as markup.
+//
+// While a tip is shown its anchor's title is taken off, so the browser does
+// not show a second one, and put back when the tip hides. At rest the DOM is
+// exactly what the page wrote.
+//
+// It installs itself, below: a page that had to remember a bindTips() call
+// would, when it forgot, silently keep the slow native tooltip and look fine.
+const TIP_SHOW_MS=350;   // long enough that crossing a control does not flash one
+const TIP_WARM_MS=450;   // moving from one tip to the next skips the wait
+const TIP={el:null, anchor:null, text:'', described:false, byPointer:false,
+  pending:null, timer:0, watch:0, hiddenAt:0, x:0, y:0, bound:false};
+
+// The nearest element with a title. A frame's title names it for a screen
+// reader and is not a tip: hovering the chat panel must not caption it.
+//
+// The element whose tip is up has no title for as long as it is up, so it is
+// recognised by being the anchor, not by the attribute: without that, moving
+// from a switch onto the label inside it finds nothing titled, hides the tip,
+// restores the title, and shows it again on the next move. Something titled
+// that sits closer than the anchor (a badge inside a titled link) still wins.
+function tipTarget(node){
+  if(!node||!node.closest) return null;
+  const el=node.closest('[title]'), a=TIP.anchor;
+  const within=n=>!!(a&&n&&(n===a||(a.contains&&a.contains(n))));
+  const hit=(within(node)&&!(el&&el!==a&&within(el)))?a:el;
+  return (hit&&hit.tagName!=='IFRAME')?hit:null;
+}
+function tipText(el){ const t=(el&&el.getAttribute)?el.getAttribute('title'):null; return t==null?'':String(t).trim(); }
+// A tip that only repeats what the control visibly says is not shown. The
+// rail's links carry their label as a title for the narrow, icons-only rail;
+// on the wide rail it would be an echo. innerText, not textContent: a label
+// hidden by CSS is not visible text. A cell cut short by an ellipsis is the
+// exception, because there the title is the rest of the value.
+function tipEchoes(el, text){
+  const norm=s=>String(s==null?'':s).replace(/\s+/g,' ').trim().toLowerCase();
+  if(norm(el.innerText==null?el.textContent:el.innerText)!==norm(text)) return false;
+  return !(el.scrollWidth>el.clientWidth+1);
+}
+function tipElement(){
+  if(TIP.el) return TIP.el;
+  const d=document.createElement('div');
+  d.id='cfop-tip'; d.className='cfop-tip'; d.hidden=true; d.setAttribute('role','tooltip');
+  document.body.appendChild(d);
+  return TIP.el=d;
+}
+// Under the anchor and centred on it; above when there is no room below;
+// never off either side.
+function tipPlace(){
+  const d=TIP.el, a=TIP.anchor;
+  if(!d||!a||!a.getBoundingClientRect) return;
+  const r=a.getBoundingClientRect(), gap=8, edge=8, w=d.offsetWidth, h=d.offsetHeight;
+  const vw=window.innerWidth||0, vh=window.innerHeight||0;
+  const left=Math.max(edge, Math.min(r.left+r.width/2-w/2, vw-w-edge));
+  const top=(r.bottom+gap+h>vh-edge && r.top-gap-h>=edge)?r.top-gap-h:r.bottom+gap;
+  d.style.left=Math.round(left)+'px'; d.style.top=Math.round(top)+'px';
+}
+function tipShow(el, byPointer){
+  const text=tipText(el);
+  if(!text||tipEchoes(el,text)) return;
+  tipHide();
+  const d=tipElement();
+  TIP.anchor=el; TIP.text=text; TIP.byPointer=!!byPointer;
+  el.removeAttribute('title');
+  // The title was the description; while it is off the element, the tip is.
+  TIP.described=!el.hasAttribute('aria-describedby');
+  if(TIP.described) el.setAttribute('aria-describedby','cfop-tip');
+  d.textContent=text; d.hidden=false;
+  tipPlace();
+  if(typeof setInterval==='function') TIP.watch=setInterval(tipWatch, 400);
+}
+function tipHide(){
+  if(TIP.timer){ clearTimeout(TIP.timer); TIP.timer=0; }
+  TIP.pending=null;
+  const a=TIP.anchor;
+  if(!a) return;
+  if(TIP.watch){ clearInterval(TIP.watch); TIP.watch=0; }
+  // Put back what was taken, unless the page wrote a newer title meanwhile.
+  if(!a.hasAttribute('title')) a.setAttribute('title', TIP.text);
+  if(TIP.described && a.getAttribute('aria-describedby')==='cfop-tip') a.removeAttribute('aria-describedby');
+  TIP.anchor=null; TIP.described=false;
+  if(TIP.el) TIP.el.hidden=true;
+  TIP.hiddenAt=Date.now();
+}
+// While a tip is up. The lists repaint by innerHTML on a poll, so the anchor
+// can be replaced under the pointer: the tip moves to whatever is there now
+// if it says the same thing, and goes away otherwise. And a page may rewrite
+// the title of the element being hovered (a timestamp's age): show the new
+// text, and take the attribute off again.
+function tipWatch(){
+  const a=TIP.anchor;
+  if(!a) return;
+  if(a.isConnected===false){
+    const text=TIP.text, pointed=TIP.byPointer;
+    const now=(pointed&&document.elementFromPoint)?tipTarget(document.elementFromPoint(TIP.x,TIP.y)):null;
+    // Nothing to restore on an element that is no longer in the page.
+    if(TIP.watch){ clearInterval(TIP.watch); TIP.watch=0; }
+    TIP.anchor=null; TIP.described=false; TIP.el.hidden=true; TIP.hiddenAt=Date.now();
+    if(now&&tipText(now)===text) tipShow(now, true);
+    return;
+  }
+  if(a.hasAttribute('title')){
+    const text=tipText(a);
+    a.removeAttribute('title');
+    if(text){ TIP.text=text; TIP.el.textContent=text; tipPlace(); }
+  }
+}
+function bindTips(){
+  if(TIP.bound||typeof document==='undefined'||!document.addEventListener) return;
+  TIP.bound=true;
+  const quiet={passive:true};
+  document.addEventListener('mouseover', e=>{
+    TIP.x=e.clientX; TIP.y=e.clientY;
+    const el=tipTarget(e.target);
+    // Still on the tip's element (or one of its children), or on the one
+    // already waiting its turn.
+    if(el&&(el===TIP.anchor||el===TIP.pending)) return;
+    tipHide();
+    if(!el) return;
+    TIP.pending=el;
+    const wait=(Date.now()-TIP.hiddenAt<TIP_WARM_MS)?0:TIP_SHOW_MS;
+    TIP.timer=setTimeout(()=>{ TIP.timer=0; TIP.pending=null; if(el.isConnected!==false) tipShow(el, true); }, wait);
+  }, quiet);
+  document.addEventListener('mousemove', e=>{ TIP.x=e.clientX; TIP.y=e.clientY; }, quiet);
+  // Left the window: there is no element to mouse over on the way out.
+  document.addEventListener('mouseout', e=>{ if(!e.relatedTarget) tipHide(); }, quiet);
+  // A keyboard user gets the same tip, at once. :focus-visible, so the focus
+  // a mouse click leaves behind does not pop one.
+  document.addEventListener('focusin', e=>{
+    const t=e.target; let keyboard=false;
+    try{ keyboard=!!(t&&t.matches&&t.matches(':focus-visible')); }catch(err){ keyboard=false; }
+    const el=keyboard?tipTarget(t):null;
+    if(el&&el!==TIP.anchor){ tipHide(); tipShow(el, false); }
+  });
+  document.addEventListener('focusout', ()=>{ if(TIP.anchor&&!TIP.byPointer) tipHide(); });
+  // Acting on the control, or moving the page under it, ends the tip.
+  ['mousedown','keydown','wheel'].forEach(t=>document.addEventListener(t, tipHide, quiet));
+  document.addEventListener('scroll', tipHide, {passive:true, capture:true});
+}
+// The one thing this file does at load: listeners on document, and no DOM
+// read or written until a tip is actually shown.
+bindTips();
+
+// ---- what the console's words mean (CFOP-707) ------------------------------
+// The console is built from a small vocabulary: pipeline stages, remediation
+// statuses and classes, investigation outcomes, triage decisions. Each word
+// shows on several pages (a status is a tile, a tab and a badge on
+// Remediations, a badge on Inbox, a link on Investigations) and none of them
+// said what it meant; that was in docs/REMEDIATION.md and the event-runtime
+// docs. One sentence each, here, once, so the pages cannot disagree.
+//
+// Written from what the code does, not from the label: the stage docstrings
+// in agent/agent.py, the queue state machine in docs/REMEDIATION.md, the
+// triage actions in docs/event-runtime-quickstart.md. A word the console
+// starts showing needs a line here; tests/test_console_tips.py fails a page
+// whose list has a word this does not.
+const GLOSSARY={
+  // The pipeline switches (remediation.queue_* and friends).
+  flag:{
+    queue_feed:"Turns findings into queue rows: an investigation's recommendation, a sweep finding, the morning summary. Off, nothing new is queued.",
+    queue_drain:"Claims queued rows and starts an executor for each. The executor opens a pull request; you still merge it. Off, queued rows wait.",
+    queue_reap:"Recovers rows whose executor died. An expired claim goes back to queued, or to needs-human once its attempts are used up.",
+    queue_verify:"Follows open pull requests. A merged PR resolves its row; a PR closed without merging rejects it. Off, pr-open rows stay where they are.",
+    queue_tracker:"Files needs-human rows that have no PR to the issue tracker and moves them to filed. Rows with a PR get an issue too. A row then follows its issue: done resolves it, cancelled rejects it.",
+    queue_reverify:"Re-checks filed rows against the live system, with read-only tools, and closes the ones that fixed themselves or were never true. Without a clear verdict a row is left alone.",
+    node_action_enabled:"Lets host fixes run. A node-action whose change record a human has merged runs its allowlisted commands over SSH. Off, those rows stay queued.",
+    model_dedupe:"When the exact-match checks call a new row new, asks a model whether it is the same fix as an open row, reworded. On its own this only records the answer on the row.",
+    model_dedupe_fold:"Lets that answer act: the new row is folded into the open row the model named. Needs model-dedupe on."
+  },
+  // remediation_queue.status, in the order a row moves.
+  remediation:{
+    queued:"Cleared to run and waiting for the drain stage to claim it: eligible on arrival, or approved by an operator.",
+    claimed:"An executor has taken this row and is working on it.",
+    executing:"Reserved. Nothing sets this status today; an executor reports straight from claimed.",
+    "pr-open":"A pull request is open for this fix. Merging it resolves the row; closing it unmerged rejects it.",
+    verifying:"Reserved. Nothing sets this status today; an executor reports straight from claimed.",
+    "needs-human":"Parked for a person: not eligible to run on its own, or the executor could not finish it. Approve queues it; Resolve or Reject closes it.",
+    filed:"Handed to the issue tracker. The row follows its issue: done there resolves it, cancelled rejects it.",
+    resolved:"Closed as done: its PR merged, its host commands ran clean, its tracker issue was completed, or an operator resolved it.",
+    failed:"The executor raised an error, or a confirmed host command exited non-zero. Nothing retries it; Reclassify sends it back through the gate.",
+    rejected:"Closed as not to be done: an operator rejected it, its PR was closed unmerged, or its tracker issue was cancelled."
+  },
+  // remediation_class: what kind of change the fix is.
+  "class":{
+    "gitops-patch":"A change to a manifest in a git repository. The executor opens a pull request.",
+    "k8s-action":"A change to a cluster object that can be written as a manifest edit.",
+    "k8s-imperative":"A one-off kubectl action, such as deleting a pod or cordoning a node. Nothing runs it automatically; it waits for a person.",
+    "node-action":"Commands on a host over SSH. They run only after a human merges the change record that lists them.",
+    "data-fix":"A change to a database row. It waits for a person.",
+    "external-system":"A change in a system outside the cluster and its hosts. It waits for a person.",
+    manual:"Work only a person can do. The executor has nothing to run: reclassify it, or do it by hand and resolve."
+  },
+  // investigations.outcome: the agent's own conclusion.
+  outcome:{
+    resolved:"The agent found the problem already fixed, or not a problem.",
+    needs_action:"The agent found a real problem and recommends a fix. The remediation beside it is where that recommendation went.",
+    monitoring:"No fix recommended: the signal recovered or the evidence was inconclusive, and the agent is watching it.",
+    escalated:"The agent could not settle this on its own and escalated it for a person to look at.",
+    escalate:"The agent could not settle this on its own and escalated it for a person to look at.",
+    failed:"The investigation itself did not finish: a model or a tool failed. It says nothing about the system that was being investigated.",
+    in_progress:"Still running.",
+    retry:"Set to be investigated again. No conclusion yet."
+  },
+  // The operator's verdict on an investigation, beside the agent's outcome.
+  triage:{
+    resolved:"An operator marked this investigation resolved. The agent's own outcome is kept as it was.",
+    ack:"An operator acknowledged this investigation: seen, nothing more to do here. The agent's own outcome is kept as it was."
+  },
+  // The event runtime's triage decision for an alert.
+  decision:{
+    investigate:"Triage sent this alert to the agent for an investigation.",
+    deep_investigate:"Sent to the deep-investigation tier: a forensics job on the host itself.",
+    notify:"A one-line notification was sent. No investigation.",
+    escalate:"Triage asked for escalation. The deep-investigation tier turns that into a deep investigation or a notification; with that tier off nothing handles it and the alert ends failed.",
+    log_only:"Recorded only. No notification and no investigation.",
+    suppressed:"Not triaged: dropped as a repeat of a recent alert, or gated out before triage."
+  },
+  // Where an alert is in the event runtime.
+  event:{
+    completed:"The decided action ran to its end.",
+    failed:"The decided action failed, or nothing could handle the decision.",
+    suppressed:"Not triaged: dropped as a repeat of a recent alert, or gated out before triage.",
+    logged:"Recorded, with nothing further done.",
+    running:"The decided action is running now.",
+    queued:"Decided, and waiting for a worker.",
+    received:"Arrived. No decision recorded yet."
+  }
+};
+// The sentence for a word, or '' when there is none: an unknown status gets
+// no tip rather than a wrong one.
+function gloss(kind, key){
+  const group=GLOSSARY[kind];
+  return (group&&Object.prototype.hasOwnProperty.call(group, key))?group[key]:'';
+}
+// The same, as a title attribute ready to drop into a tag: ' title="…"' or ''.
+function glossAttr(kind, key){ const t=gloss(kind, key); return t?` title="${esc(t)}"`:''; }
 
 // ---- sweep reports that are a document (CFOP-708) -------------------------
 // A morning summary is stored as a sweep report: its one "finding" is the

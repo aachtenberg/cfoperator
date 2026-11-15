@@ -990,7 +990,7 @@
 </head>
 <body>
     <header>
-        <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">
+        <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Toggle sidebar" title="Skills and chat history">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
                 <line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/>
             </svg>
@@ -1020,7 +1020,7 @@
                     <input type="text" id="llm-model-custom" placeholder="model id" hidden autocomplete="off">
                 </div>
                 <p class="llm-err" id="llm-model-err"></p>
-                <button type="button" class="llm-reset" id="llm-reset" hidden>Back to default</button>
+                <button type="button" class="llm-reset" id="llm-reset" hidden title="Drop this session's own model and go back to the seat's default, which is set in Admin.">Back to default</button>
                 <a class="llm-more" href="/admin?tab=llm">Defaults and seats in Admin →</a>
             </div>
         </div>
@@ -1047,7 +1047,7 @@
             <details class="sidebar-section" id="history-section" open>
                 <summary><h3 style="flex:1;display:flex;justify-content:space-between;align-items:center;">
                     Chat History
-                    <button onclick="event.preventDefault();event.stopPropagation();startNewChat()" style="background:var(--accent);color:var(--bg-primary);border:none;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;">+ New</button>
+                    <button onclick="event.preventDefault();event.stopPropagation();startNewChat()" title="Start a new chat. This one stays in the history below." style="background:var(--accent);color:var(--bg-primary);border:none;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;">+ New</button>
                 </h3></summary>
                 <ul class="skill-list" id="session-list" style="margin-top:8px;max-height:200px;overflow-y:auto;"></ul>
             </details>
@@ -2042,7 +2042,7 @@
                 const what = doc ? 'morning summary'
                     : `${escapeHtml(String(r.finding_count))} finding${r.finding_count !== 1 ? 's' : ''}`;
                 panel.innerHTML = `
-                    <div class="sweep-header" onclick="this.nextElementSibling.classList.toggle('open')">
+                    <div class="sweep-header" title="The agent's latest sweep of the fleet. Click to show or hide what it found." onclick="this.nextElementSibling.classList.toggle('open')">
                         <span><span class="sweep-severity ${escapeHtml(r.severity)}">${escapeHtml(r.severity)}</span> &nbsp;Sweep #${escapeHtml(String(r.id))}: ${what}</span>
                         <span class="sweep-time">${ago}</span>
                     </div>

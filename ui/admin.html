@@ -83,12 +83,12 @@
 <div class="banner" id="banner" hidden></div>
 
 <nav class="tabs" role="tablist" aria-label="Admin sections">
-  <button type="button" class="tab" role="tab" data-tab="users" aria-selected="false">Users</button>
-  <button type="button" class="tab" role="tab" data-tab="tokens" aria-selected="false">Tokens</button>
-  <button type="button" class="tab" role="tab" data-tab="llm" aria-selected="false">LLM</button>
-  <button type="button" class="tab" role="tab" data-tab="allowlist" aria-selected="false">Allowlist</button>
-  <button type="button" class="tab" role="tab" data-tab="repos" aria-selected="false">Repos</button>
-  <button type="button" class="tab" role="tab" data-tab="connectors" aria-selected="false">Connectors</button>
+  <button type="button" class="tab" role="tab" data-tab="users" aria-selected="false" title="Console accounts and their roles.">Users</button>
+  <button type="button" class="tab" role="tab" data-tab="tokens" aria-selected="false" title="Every API token on this console, whoever owns it, and what each may do.">Tokens</button>
+  <button type="button" class="tab" role="tab" data-tab="llm" aria-selected="false" title="Which model each job runs on, the provider keys, and the runtime selection.">LLM</button>
+  <button type="button" class="tab" role="tab" data-tab="allowlist" aria-selected="false" title="The commands a host fix is allowed to run.">Allowlist</button>
+  <button type="button" class="tab" role="tab" data-tab="repos" aria-selected="false" title="The repositories the agent may read and open pull requests against.">Repos</button>
+  <button type="button" class="tab" role="tab" data-tab="connectors" aria-selected="false" title="MCP servers whose tools the console chat may use.">Connectors</button>
 </nav>
 
 <!-- ── Users ── -->
@@ -158,7 +158,7 @@
   <div class="divider">Tokens <span class="muted" id="tok-count"></span></div>
   <table>
     <thead><tr>
-      <th>Label</th><th>Prefix</th><th>Scopes</th><th>Status</th>
+      <th>Label</th><th title="The first characters of the token, to tell tokens apart. The whole token is shown once, when it is created.">Prefix</th><th>Scopes</th><th>Status</th>
       <th>Created</th><th>Last used</th><th>Expires</th><th></th>
     </tr></thead>
     <tbody id="tok-rows"></tbody>
@@ -301,7 +301,7 @@
 
   <div class="section" style="margin-top:14px">
     <button class="chip primary" id="allow-save" disabled onclick="saveAllowlist()">Save</button>
-    <button class="chip" id="allow-reset" onclick="resetAllowlist()">Reset to ceiling</button>
+    <button class="chip" id="allow-reset" onclick="resetAllowlist()" title="Drop what was narrowed here and allow everything config.yaml allows again.">Reset to ceiling</button>
     <span class="muted" id="allow-status" style="margin-left:10px"></span>
   </div>
 

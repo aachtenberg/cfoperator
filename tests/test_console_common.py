@@ -42,7 +42,10 @@ SHARED_HELPERS = ["esc", "color", "badge", "age", "refreshAges", "toast", "trapF
                   # CFOP-561: a Save lit only while there is something to save.
                   "armSave", "runSave",
                   # CFOP-708: a sweep report that is a document (a morning summary).
-                  "sweepDoc"]
+                  "sweepDoc",
+                  # CFOP-707: the one tooltip, and the one copy of what the
+                  # console's words mean.
+                  "bindTips", "tipShow", "tipHide", "gloss", "glossAttr"]
 
 #: Pages whose main content is a polled row list. Same set as
 #: test_console_a11y.LIST_PAGES; repeated rather than imported so this file

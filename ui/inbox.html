@@ -114,6 +114,7 @@
 // so the number beside "Inbox" is the length of this queue.
 const LIMIT=80;               // the investigations page's window; the tiles count within it
 const QUEUE_MAX=25;           // the page is a queue, not the archive — "Open all" is the archive
+const RECENT=' Counted over the '+LIMIT+' most recent investigations.';
 const OC={resolved:'--accent',needs_action:'--orange',monitoring:'--cyan',escalated:'--red',failed:'--red'};
 const SC={queued:'--cyan',claimed:'--orange',executing:'--orange','pr-open':'--purple',verifying:'--cyan',
   resolved:'--accent',failed:'--red','needs-human':'--orange',rejected:'--text-muted',
@@ -168,32 +169,35 @@ async function load(){
 // remediation is already decided, and it cannot hide one that is not.
 function queue(){ return (window.CFOP&&window.CFOP.needsAction)?window.CFOP.needsAction(INV):INV.filter(r=>r.outcome==='needs_action'&&!r.triage_action); }
 function count(n, varname){ return n?badge(String(n), varname):''; }
-function kpi(label, n, tag, varname, href){
-  return `<a class="kpi" href="${href}"><span class="l">${esc(label)}</span>
+// tip: what the number counts (CFOP-707). The tiles count within the page's
+// window of recent investigations, which the tip says where it matters.
+function kpi(label, n, tag, varname, href, tip){
+  return `<a class="kpi" href="${href}"${tip?` title="${esc(tip)}"`:''}><span class="l">${esc(label)}</span>
     <span class="v"><span class="n">${n}</span>${badge(tag, n?varname:'--text-muted')}</span></a>`;
 }
 function linkedRem(r){ return REMS[r.id] || (r.remediation_id ? (REMID[r.remediation_id]||{id:r.remediation_id,status:''}) : null); }
 function remBadge(r){
   const m=linkedRem(r);
-  if(!m) return badge('no remediation','--text-muted');
-  return `<a href="/remediations#${Number(m.id)}" title="open the remediation">${badge('#'+m.id+(m.status?' '+m.status:''), SC[m.status]||'--text-muted')}</a>`;
+  if(!m) return badge('no remediation','--text-muted','No queue row came out of this investigation. Its recommendation is in the investigation itself.');
+  return `<a href="/remediations#${Number(m.id)}" title="${esc(gloss('remediation',m.status)||'open the remediation')}">${badge('#'+m.id+(m.status?' '+m.status:''), SC[m.status]||'--text-muted')}</a>`;
 }
 
 function paint(){
   const by=o=>INV.filter(r=>r.outcome===o).length, q=queue();
   document.getElementById('kpis').innerHTML=
-    kpi('Investigations needing action', q.length, 'needs action', '--orange', '/investigations')+
-    kpi('Escalated', by('escalated')+by('escalate'), 'escalated', '--red', '/investigations')+
-    kpi('Monitoring', by('monitoring'), 'watching', '--cyan', '/investigations')+
-    kpi('Failed investigation runs', by('failed'), 'failed', '--red', '/investigations')+
-    kpi('Remediations filed', FILED.length, 'in tracker', '--text-secondary', '/remediations');
+    kpi('Investigations needing action', q.length, 'needs action', '--orange', '/investigations',
+      'Investigations that ended on needs action, that nobody has triaged, and whose remediation is not already resolved, rejected or filed. The same number as beside Inbox in the rail.')+
+    kpi('Escalated', by('escalated')+by('escalate'), 'escalated', '--red', '/investigations', gloss('outcome','escalated')+RECENT)+
+    kpi('Monitoring', by('monitoring'), 'watching', '--cyan', '/investigations', gloss('outcome','monitoring')+RECENT)+
+    kpi('Failed investigation runs', by('failed'), 'failed', '--red', '/investigations', gloss('outcome','failed')+RECENT)+
+    kpi('Remediations filed', FILED.length, 'in tracker', '--text-secondary', '/remediations', gloss('remediation','filed'));
 
   const pipe=document.getElementById('pipe');
   pipe.hidden=!FLAGS;
   if(FLAGS) pipe.innerHTML='<h2>Pipeline</h2>'+Object.keys(FLAG_LABEL).map(k=>{
     const on=!!FLAGS[k];
     // The word rides along for anyone not seeing the dot.
-    return `<span class="stage${on?' on':''}${on&&k==='queue_drain'?' warn':''}"><i aria-hidden="true"></i>${FLAG_LABEL[k]}<span class="sr-only"> ${on?'on':'off'}</span></span>`;
+    return `<span class="stage${on?' on':''}${on&&k==='queue_drain'?' warn':''}"${glossAttr('flag',k)}><i aria-hidden="true"></i>${FLAG_LABEL[k]}<span class="sr-only"> ${on?'on':'off'}</span></span>`;
   }).join('')+'<a class="end" href="/remediations">Manage pipeline</a>';
 
   document.getElementById('queue-count').innerHTML=count(q.length,'--orange');
@@ -203,7 +207,7 @@ function paint(){
       <span class="id mono">#${Number(r.id)}</span>
       <div class="what"><a href="/investigations#${Number(r.id)}">${esc(String(r.trigger||'').slice(0,160))||'(no trigger recorded)'}</a>
         <span class="sub">${[r.provider?esc(r.provider):'', fmtTs(r.started_at)].filter(Boolean).join(' · ')}</span></div>
-      <div class="do">${remBadge(r)}${ADMIN?`<button type="button" class="chip" data-ack="${Number(r.id)}" aria-label="Acknowledge investigation #${Number(r.id)}">Ack</button>`:''}</div>
+      <div class="do">${remBadge(r)}${ADMIN?`<button type="button" class="chip" data-ack="${Number(r.id)}" aria-label="Acknowledge investigation #${Number(r.id)}" title="Acknowledge: you have seen this and nothing more is needed here. It leaves this queue; the agent's own outcome is kept.">Ack</button>`:''}</div>
     </div>`).join('')+
     (q.length>QUEUE_MAX?`<div class="empty"><a href="/investigations">${q.length-QUEUE_MAX} more in Investigations</a></div>`:'');
 
@@ -212,7 +216,7 @@ function paint(){
   document.getElementById('filed').innerHTML=FILED.slice(0,6).map(r=>{
     const p=r.payload||{}, href=safeUrl(r.tracker_url);
     return `<div class="filed"><div class="top"><a class="id mono" href="/remediations#${Number(r.id)}">#${Number(r.id)}</a>
-        ${r.risk?badge(r.risk+' risk', RC[r.risk]||'--text-muted'):''}${badge(r.remediation_class||'—','--text-muted')}
+        ${r.risk?badge(r.risk+' risk', RC[r.risk]||'--text-muted'):''}${badge(r.remediation_class||'—','--text-muted',gloss('class',r.remediation_class))}
         ${href?`<a class="tk mono" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(r.tracker_key||'issue')} ↗</a>`:''}</div>
       <p>${esc(p.recommendation||p.title||'')}</p></div>`;
   }).join('');

@@ -182,12 +182,16 @@
     var rows = '<div class="conn' + (up ? '' : ' down') + '"><i aria-hidden="true"></i>' +
       (up ? 'Connected' : 'Disconnected') +
       (up && STATUS.uptime ? '<span class="up">' + esc(STATUS.uptime) + '</span>' : '') + '</div>';
-    function row(label, value, quiet) {
-      return value ? '<div class="row"><span>' + label + '</span><span class="mono' +
+    // Two titles a row (CFOP-707): the label's says what the line is; the
+    // value's is the value itself, which the shared tooltip shows only when
+    // the card has cut it short.
+    function row(label, value, quiet, tip) {
+      return value ? '<div class="row"><span title="' + esc(tip) + '">' + label + '</span><span class="mono' +
         (quiet ? ' quiet' : '') + '" title="' + esc(value) + '">' + esc(value) + '</span></div>' : '';
     }
-    return rows + row('Provider', STATUS.provider) + row('Last sweep', STATUS.sweep) +
-      row('Build', STATUS.version, true);
+    return rows + row('Provider', STATUS.provider, false, 'The LLM backend the agent is set to use.') +
+      row('Last sweep', STATUS.sweep, false, 'The latest sweep of the fleet: its number and when it ran.') +
+      row('Build', STATUS.version, true, 'The version of the agent that is answering.');
   }
 
   function paintStatus() {

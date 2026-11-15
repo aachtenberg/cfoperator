@@ -288,6 +288,17 @@ td .sub { display:block; margin-top:4px; font-family:var(--font-mono); font-size
 .cmd { background:var(--bg-tertiary); border:1px solid var(--border-subtle); border-radius:var(--radius-xs);
   padding:2px 6px; user-select:all; font-size:12px; }
 
+/* The tooltip (CFOP-707): one element that common.js fills from whatever
+   title the pointer or the keyboard focus is on, and places from that
+   element's rect. Fixed and above everything, the drawer, the chat panel and
+   the toasts included, because it describes whatever is under the pointer.
+   pre-line: a title may break its own lines. Never takes the pointer. */
+.cfop-tip { position:fixed; top:0; left:0; z-index:80; max-width:min(340px, calc(100vw - 16px));
+  padding:7px 10px; border-radius:var(--radius-xs); background:#262635; border:1px solid #3d3d52;
+  color:var(--text-primary); font-family:var(--font-ui); font-size:12.5px; font-weight:400; line-height:1.45;
+  letter-spacing:0; text-transform:none; text-align:left; white-space:pre-line; overflow-wrap:anywhere;
+  box-shadow:0 8px 24px rgba(0,0,0,.55); pointer-events:none; }
+
 /* Markdown the agent wrote (an investigation's full report, a morning
    summary), after renderMarkdown in common.js. Compact: its headings are
    labels inside a card or a drawer, not page headings. One copy since

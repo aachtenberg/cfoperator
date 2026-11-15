@@ -42,11 +42,11 @@
 <div id="banner" role="status" hidden></div>
 <div class="toolbar">
   <div class="tabs" id="filters" aria-label="Status"></div>
-  <label class="fld">Decision <select id="f-action" aria-label="Decision" onchange="setFilter('action', this.value)"></select></label>
-  <label class="fld">Source <select id="f-source" aria-label="Source" onchange="setFilter('source', this.value)"></select></label>
+  <label class="fld" title="What triage decided to do with the alert.">Decision <select id="f-action" aria-label="Decision" onchange="setFilter('action', this.value)"></select></label>
+  <label class="fld" title="Where the alert came from: Alertmanager, one of the agent's own sweeps, boot forensics, or raised by hand.">Source <select id="f-source" aria-label="Source" onchange="setFilter('source', this.value)"></select></label>
   <label class="fld">Severity <select id="f-severity" aria-label="Severity" onchange="setFilter('severity', this.value)"></select></label>
   <label class="fld">Time <select id="f-window" aria-label="Time window" onchange="setFilter('window', this.value)"></select></label>
-  <label class="fld check"><input type="checkbox" id="f-group" onchange="setGroup(this.checked)"> Group sweep findings</label>
+  <label class="fld check" title="A sweep posts its findings in one burst. Ticked, sweep alerts within five minutes of each other fold under one row. Only while the list is in time order."><input type="checkbox" id="f-group" onchange="setGroup(this.checked)"> Group sweep findings</label>
 </div>
 <section class="card" aria-label="Event feed">
   <div class="card-head">
@@ -55,11 +55,11 @@
   <!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit.
        The sort is over the rows loaded so far (the server pages newest first). -->
   <table>
-    <thead><tr><th data-sort="when">Time</th><th data-sort="severity">Severity</th><th data-sort="alert">Alert</th><th data-sort="source">Source</th><th data-sort="decision">Outcome</th></tr></thead>
+    <thead><tr><th data-sort="when">Time</th><th data-sort="severity">Severity</th><th data-sort="alert">Alert</th><th data-sort="source">Source</th><th data-sort="decision" title="What became of the alert: the triage decision, its status when that adds something, and the investigation it opened.">Outcome</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
   <div id="empty" class="empty" hidden>No alerts match these filters.</div>
-  <div id="more" class="more" hidden><button type="button" class="chip" onclick="loadMore()">Load older alerts</button></div>
+  <div id="more" class="more" hidden><button type="button" class="chip" onclick="loadMore()" title="Adds the next 50 older alerts that match these filters. Past 200 loaded, the list stops refreshing itself.">Load older alerts</button></div>
 </section>
 </main>
 <div id="backdrop" onclick="closeDetail()" aria-hidden="true"></div>
@@ -247,9 +247,9 @@ const STATUS_SAYS_NOTHING={completed:1};
 const SAME_THING={suppressed:'suppressed', log_only:'logged'};
 function outcomeCell(r){
   const inv=investigationOf(r), parts=[];
-  if(r.action) parts.push(badge(r.action, ACTION_COLOR[r.action]||'--text-muted'));
+  if(r.action) parts.push(badge(r.action, ACTION_COLOR[r.action]||'--text-muted', gloss('decision',r.action)));
   if(!r.action || (!STATUS_SAYS_NOTHING[r.status] && SAME_THING[r.action]!==r.status))
-    parts.push(badge(r.status, STATUS_COLOR[r.status]||'--text-muted'));
+    parts.push(badge(r.status, STATUS_COLOR[r.status]||'--text-muted', gloss('event',r.status)));
   if(inv) parts.push(`<a class="mono" href="/investigations#${inv}" onclick="event.stopPropagation()">#${inv}</a>`);
   return `<span class="outcome">${parts.join('')}</span>`;
 }
@@ -274,7 +274,7 @@ function safeUrl(u){ const s=String(u==null?'':u).trim(); if(!s) return '';
 
 function chip(value, label){
   const on=F.status===value;
-  return `<button type="button" class="tab" aria-pressed="${on}" data-status="${esc(value)}" onclick="setFilter('status', this.getAttribute('data-status'))">${esc(label)}</button>`;
+  return `<button type="button" class="tab" aria-pressed="${on}" data-status="${esc(value)}"${glossAttr('event',value)} onclick="setFilter('status', this.getAttribute('data-status'))">${esc(label)}</button>`;
 }
 function options(id, values, allLabel, current, label){
   const el=document.getElementById(id);
@@ -428,8 +428,8 @@ function renderDetail(a, events){
   const title=summaryLine(a.summary)||a.alert_id;
   return `${closeButton()}
     <h2 id="detail-title">${esc(title)}${copyIcon('summary',{text:title})}</h2>
-    <div class="kv">${badge(a.status, STATUS_COLOR[a.status]||'--text-muted')}
-      ${a.action?badge(a.action, ACTION_COLOR[a.action]||'--text-muted'):''}
+    <div class="kv">${badge(a.status, STATUS_COLOR[a.status]||'--text-muted', gloss('event',a.status))}
+      ${a.action?badge(a.action, ACTION_COLOR[a.action]||'--text-muted', gloss('decision',a.action)):''}
       ${badge(a.severity, SEVERITY_COLOR[a.severity]||'--text-muted')}
       <span class="muted">${esc(a.source||'')}</span></div>
     <div class="kv"><b>alert</b> <span id="alert-id">${esc(a.alert_id)}</span>${copyIcon('alert id',{from:'alert-id'})}</div>
@@ -438,7 +438,7 @@ function renderDetail(a, events){
     <div class="kv"><b>latest</b> ${fmtTs(a.latest_event_at,{seconds:true})} <span class="muted">· ${esc(a.event_count)} events</span></div>
     ${a.reason?`<div class="kv"><b>reason</b> ${esc(a.reason)}</div>`:''}
     ${dec.action?`<h3>Triage</h3>
-      <div class="kv"><b>decision</b> ${badge(dec.action, ACTION_COLOR[dec.action]||'--text-muted')}${dec.confidence!=null?' <span class="muted">confidence '+esc(dec.confidence)+'</span>':''}</div>
+      <div class="kv"><b>decision</b> ${badge(dec.action, ACTION_COLOR[dec.action]||'--text-muted', gloss('decision',dec.action))}${dec.confidence!=null?' <span class="muted">confidence '+esc(dec.confidence)+'</span>':''}</div>
       ${llm.triaged?`<div class="kv"><b>triaged by</b> <span class="mono">${esc(llm.triaged)}</span></div>`:''}
       ${dec.reasoning?`<div class="prose">${esc(dec.reasoning)}</div>`:''}`:''}
     ${(a.message||inv||links.length||llm.investigated)?`<h3>Outcome</h3>
