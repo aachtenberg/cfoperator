@@ -281,6 +281,19 @@ function renderMarkdown(text) {
   }
 }
 
+// ---- sweep reports that are a document (CFOP-708) -------------------------
+// A morning summary is stored as a sweep report: its one "finding" is the
+// first 500 characters of a markdown document, and the document itself rides
+// in sweep_meta.full_text. The fragment is what both pages that show the
+// latest sweep used to print, as text: markdown source on one line, cut
+// mid-word. This is the document when the report carries one, else ''; a
+// caller that gets one renders it with renderMarkdown inside a .md block
+// instead of listing the findings.
+function sweepDoc(report){
+  const meta=(report&&report.sweep_meta)||{};
+  return typeof meta.full_text==='string'?meta.full_text.trim():'';
+}
+
 // ---- list kit: sortable headers and search (CFOP-412) ---------------------
 // Three list pages (investigations, remediations, events) share one way to
 // sort a column and one way to search. The page supplies what each column

@@ -265,6 +265,20 @@ td .sub { display:block; margin-top:4px; font-family:var(--font-mono); font-size
 .cmd { background:var(--bg-tertiary); border:1px solid var(--border-subtle); border-radius:var(--radius-xs);
   padding:2px 6px; user-select:all; font-size:12px; }
 
+/* Markdown the agent wrote (an investigation's full report, a morning
+   summary), after renderMarkdown in common.js. Compact: its headings are
+   labels inside a card or a drawer, not page headings. One copy since
+   CFOP-708; a page that prints agent markdown outside a .md block is showing
+   the source. */
+.md { font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+.md h1,.md h2,.md h3,.md h4 { font-size:13px; margin:16px 0 8px; } .md > :first-child { margin-top:0; }
+.md p,.md ul,.md ol,.md pre,.md table,.md blockquote { margin:0 0 8px; } .md ul,.md ol { padding-left:22px; }
+.md > :last-child { margin-bottom:0; } .md li { margin:0; }
+.md code { font-family:var(--font-mono); font-size:12px; background:var(--bg-primary);
+  border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:1px 5px; }
+.md pre code { border:0; padding:0; background:none; }
+.md table { border-collapse:collapse; margin:6px 0; } .md td,.md th { padding:4px 8px; border:1px solid var(--border-subtle); }
+
 /* Toasts sit above the Ask button, not under it. */
 #toasts { position:fixed; bottom:96px; right:28px; display:flex; flex-direction:column; gap:8px; z-index:60; }
 .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);

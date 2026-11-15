@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CFOperator · Inbox</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<!-- A morning summary is markdown (CFOP-708); same vendored marked as the chat page. -->
+<script src="/vendor/marked.min.js"></script>
 <!-- Tokens, the rail and the shared kit: one copy, see ui/console.css. -->
 <link rel="stylesheet" href="/console.css">
 <style>
@@ -48,12 +50,17 @@
   .filed .top .tk { margin-left:auto; font-size:12px; }
   .filed p { margin:0; line-height:1.5; color:#d4d4de; display:-webkit-box; -webkit-line-clamp:4;
     -webkit-box-orient:vertical; overflow:hidden; }
-  .sweep ul { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:10px;
+  /* The findings list, by id: a summary's own lists (the .md block below)
+     are ordinary bullets and must not pick these rows up. */
+  #sweep { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:10px;
     color:#d4d4de; line-height:1.45; }
-  .sweep li { display:flex; gap:10px; }
-  .sweep li::before { content:''; width:6px; height:6px; margin-top:8px; border-radius:50%; flex:none;
+  #sweep li { display:flex; gap:10px; }
+  #sweep li::before { content:''; width:6px; height:6px; margin-top:8px; border-radius:50%; flex:none;
     background:color-mix(in srgb, var(--tone, var(--cyan)) 80%, white); }
   .sweep .card-body { display:flex; flex-direction:column; gap:12px; }
+  /* A summary is a document, not a list of findings: it scrolls inside the
+     card, so a long one does not push the cards under it off the page. */
+  .sweep .md { max-height:420px; overflow:auto; color:#d4d4de; padding-right:6px; }
 </style>
 </head>
 <body>
@@ -85,7 +92,7 @@
     </section>
     <section class="card sweep" id="sweep-card" aria-label="Latest sweep" hidden>
       <div class="card-head"><h2>Latest sweep</h2><span class="mono muted" id="sweep-meta"></span><span class="end" id="sweep-count"></span></div>
-      <div class="card-body"><ul id="sweep"></ul><a href="/events?source=cfoperator-sweep" style="font-size:13px">View in Events</a></div>
+      <div class="card-body"><ul id="sweep"></ul><div class="md" id="sweep-doc" hidden></div><a href="/events?source=cfoperator-sweep" style="font-size:13px">View in Events</a></div>
     </section>
   </div>
 </div>
@@ -210,11 +217,21 @@ function paint(){
   card.hidden=!SWEEP;
   if(SWEEP){
     const f=SWEEP.findings||[], n=SWEEP.finding_count!=null?SWEEP.finding_count:f.length;
+    // A morning summary is stored as a sweep report whose one "finding" is
+    // the first 500 characters of a markdown document; the document itself is
+    // sweep_meta.full_text (CFOP-708). Printing the finding showed markdown
+    // source on one line, cut mid-word. When the report carries the document,
+    // the card shows the document, rendered; it is not "1 finding".
+    const doc=sweepDoc(SWEEP), list=document.getElementById('sweep'), md=document.getElementById('sweep-doc');
     document.getElementById('sweep-meta').innerHTML='#'+esc(SWEEP.id)+' · '+fmtTs(SWEEP.swept_at);
-    document.getElementById('sweep-count').innerHTML=badge(n+' finding'+(n===1?'':'s'), n?(SEV[SWEEP.severity]||'--cyan'):'--text-muted');
-    document.getElementById('sweep').innerHTML=f.length
+    document.getElementById('sweep-count').innerHTML=doc
+      ? badge('morning summary', SEV[SWEEP.severity]||'--cyan')
+      : badge(n+' finding'+(n===1?'':'s'), n?(SEV[SWEEP.severity]||'--cyan'):'--text-muted');
+    list.hidden=!!doc; md.hidden=!doc;
+    md.innerHTML=doc?renderMarkdown(doc):'';
+    list.innerHTML=doc?'':(f.length
       ? f.slice(0,5).map(x=>`<li style="--tone:var(${SEV[x.severity]||'--cyan'})">${esc(x.finding||'')}</li>`).join('')
-      : '<li class="muted">The sweep found nothing.</li>';
+      : '<li class="muted">The sweep found nothing.</li>');
   }
 }
 

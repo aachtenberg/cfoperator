@@ -124,15 +124,7 @@
   .ev { margin:0 0 8px 8px; font-size:13px; } .ev:last-child { margin-bottom:0; }
   .ev .src { font-family:var(--font-mono); font-size:12px; color:var(--text-secondary); }
   .ev .val { margin-left:12px; white-space:pre-wrap; word-break:break-word; }
-  /* Markdown from the agent (the full report) — see renderMarkdown in common.js. */
-  .md { font-size:13px; line-height:1.5; }
-  .md h1,.md h2,.md h3,.md h4 { font-size:13px; margin:16px 0 8px; } .md > :first-child { margin-top:0; }
-  .md p,.md ul,.md ol,.md pre,.md table,.md blockquote { margin:0 0 8px; } .md ul,.md ol { padding-left:22px; }
-  .md > :last-child { margin-bottom:0; } .md li { margin:0; }
-  .md code { font-family:var(--font-mono); font-size:12px; background:var(--bg-primary);
-    border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:1px 5px; }
-  .md pre code { border:0; padding:0; background:none; }
-  .md table { border-collapse:collapse; margin:6px 0; } .md td,.md th { padding:4px 8px; border:1px solid var(--border-subtle); }
+  /* Markdown from the agent (the full report) is the shared .md — see console.css. */
   /* The cockpit (CFOP-59): a terminal in the pane, beside the finding — which
      is the reason this is not a new tab. */
   #cockpit { margin:0 0 8px; } #cockpit:empty { display:none; }

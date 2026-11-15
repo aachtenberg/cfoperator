@@ -253,6 +253,16 @@ function outcomeCell(r){
   if(inv) parts.push(`<a class="mono" href="/investigations#${inv}" onclick="event.stopPropagation()">#${inv}</a>`);
   return `<span class="outcome">${parts.join('')}</span>`;
 }
+// An alert's summary is one line, except when a sweep posts a whole markdown
+// document as its finding: the morning summary (CFOP-708). Run together in a
+// row that read "# Morning Infrastructure Summary - … ### Overnight Activity
+// Highlights - **`api-server`…". The row and the drawer's title show the
+// document's first line without its heading marks; the text itself is in the
+// drawer, under Outcome and in the alert details.
+function summaryLine(s){
+  const first=String(s==null?'':s).split(/\r?\n/).map(x=>x.trim()).find(Boolean)||'';
+  return first.replace(/^#{1,6}\s+/,'').replace(/\s+#+$/,'');
+}
 function dot(text, varname){ return `<span class="sev" style="--tone:var(${varname})">${esc(text)||'—'}</span>`; }
 function sourceLabel(s){ return s==='cfoperator-sweep'?'sweep':(s||'—'); }
 function resource(r){ return [r.namespace, r.resource_name].filter(Boolean).join('/'); }
@@ -338,7 +348,7 @@ function rowHtml(r, inGroup){
     <tr id="row-${esc(r.alert_id)}" data-id="${esc(r.alert_id)}"${inGroup?' class="in-grp"':''} tabindex="0" onclick="openRow(this)" onkeydown="rowKey(event,this)">
       <td class="mono muted">${fmtTs(r.latest_event_at)}</td>
       <td>${dot(r.severity, SEVERITY_COLOR[r.severity]||'--text-muted')}</td>
-      <td class="summ">${esc(String(r.summary||'').slice(0,160))}${subLine(r)}</td>
+      <td class="summ">${esc(summaryLine(r.summary).slice(0,160))}${subLine(r)}</td>
       <td class="mono muted" style="white-space:nowrap">${esc(sourceLabel(r.source))}</td>
       <td>${outcomeCell(r)}</td></tr>`;
 }
@@ -415,7 +425,7 @@ function renderDetail(a, events){
   const links=['html_url','url','investigation_url'].map(k=>safeUrl(det[k])).filter(Boolean);
   const source=(events.find(e=>(e.payload||{}).alert)||{}).payload;
   const alertDetails=((source||{}).alert||{}).details||{};
-  const title=a.summary||a.alert_id;
+  const title=summaryLine(a.summary)||a.alert_id;
   return `${closeButton()}
     <h2 id="detail-title">${esc(title)}${copyIcon('summary',{text:title})}</h2>
     <div class="kv">${badge(a.status, STATUS_COLOR[a.status]||'--text-muted')}

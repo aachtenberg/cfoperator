@@ -1959,12 +1959,15 @@
         // known about the finding, then the ask that wants the checks run.
         function findingQuestion(r, i) {
             const f = (r.findings || [])[i] || {};
+            // A summary's only finding is the first 500 characters of it
+            // (CFOP-708): ask about the document, not the fragment.
+            const text = (i === 0 && sweepDoc(r)) || f.finding;
             const head = `Sweep #${r.id}.${i} — severity ${f.severity || 'info'}`
                 + (f.status ? `, status ${f.status}` : '')
                 + (r.swept_at ? `, swept ${r.swept_at}` : '') + '.';
             return [
                 head,
-                f.finding ? `Finding: ${f.finding}` : '',
+                text ? `Finding: ${text}` : '',
                 f.remediation ? `Proposed remediation: ${f.remediation}` : '',
                 f.resolution ? `Recorded resolution: ${f.resolution}` : '',
                 'Check whether this is still the case — run the checks yourself rather than listing them — '
@@ -2003,13 +2006,21 @@
                 // open body, so an open panel stays open across the repaint.
                 const wasOpen = !!panel.querySelector('.sweep-body.open');
                 document.getElementById('status-sweep').textContent = `Last sweep: ${ago}`;
+                // A morning summary is one markdown document, stored with its
+                // first 500 characters as the report's only "finding"
+                // (CFOP-708, sweepDoc in common.js). The row keeps its Ask
+                // button; what it shows is the document, rendered.
+                const doc = sweepDoc(r);
+                const what = doc ? 'morning summary'
+                    : `${escapeHtml(String(r.finding_count))} finding${r.finding_count !== 1 ? 's' : ''}`;
                 panel.innerHTML = `
                     <div class="sweep-header" onclick="this.nextElementSibling.classList.toggle('open')">
-                        <span><span class="sweep-severity ${escapeHtml(r.severity)}">${escapeHtml(r.severity)}</span> &nbsp;Sweep #${escapeHtml(String(r.id))}: ${escapeHtml(String(r.finding_count))} finding${r.finding_count !== 1 ? 's' : ''}</span>
+                        <span><span class="sweep-severity ${escapeHtml(r.severity)}">${escapeHtml(r.severity)}</span> &nbsp;Sweep #${escapeHtml(String(r.id))}: ${what}</span>
                         <span class="sweep-time">${ago}</span>
                     </div>
                     <div class="sweep-body">
-                        ${(r.findings || []).map((f, i) => `<div class="sweep-finding${f.status ? ' finding-' + escapeHtml(f.status) : ''}"><div class="sweep-finding-body"><span class="sweep-badge ${escapeHtml(f.severity || 'info')}">${escapeHtml((f.severity || 'info').toUpperCase())}</span><span class="finding-id">#${escapeHtml(String(r.id))}.${i}</span>${f.status ? `<span class="finding-status ${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>` : ''}${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}${f.resolution ? `<div class="sweep-remediation">&check; ${escapeHtml(f.resolution)}</div>` : ''}</div><button type="button" class="ask" onclick="askAboutFinding(${i})" aria-label="Ask the console about finding #${escapeHtml(String(r.id))}.${i}" title="Ask the console about this finding">${ASK_ICON}</button></div>`).join('')}
+                        ${doc ? `<div class="sweep-finding"><div class="sweep-finding-body md">${renderMarkdown(doc)}</div><button type="button" class="ask" onclick="askAboutFinding(0)" aria-label="Ask the console about this summary" title="Ask the console about this summary">${ASK_ICON}</button></div>`
+                        : (r.findings || []).map((f, i) => `<div class="sweep-finding${f.status ? ' finding-' + escapeHtml(f.status) : ''}"><div class="sweep-finding-body"><span class="sweep-badge ${escapeHtml(f.severity || 'info')}">${escapeHtml((f.severity || 'info').toUpperCase())}</span><span class="finding-id">#${escapeHtml(String(r.id))}.${i}</span>${f.status ? `<span class="finding-status ${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>` : ''}${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}${f.resolution ? `<div class="sweep-remediation">&check; ${escapeHtml(f.resolution)}</div>` : ''}</div><button type="button" class="ask" onclick="askAboutFinding(${i})" aria-label="Ask the console about finding #${escapeHtml(String(r.id))}.${i}" title="Ask the console about this finding">${ASK_ICON}</button></div>`).join('')}
                         ${meta.sweep_backend ? `<div class="sweep-meta">${escapeHtml(meta.sweep_backend)}/${escapeHtml(meta.sweep_model || '')}</div>` : ''}
                     </div>`;
                 if (wasOpen) panel.querySelector('.sweep-body').classList.add('open');
