@@ -170,6 +170,46 @@ def chat_session_id(raw: Any) -> Optional[int]:
     return session_id if session_id > 0 else None
 
 
+#: The counts a finished turn may put on its stored message (CFOP-718).
+_CHAT_USAGE_KEYS = ('input_tokens', 'output_tokens', 'last_prompt_tokens', 'context_window')
+
+
+def chat_turn_stats(data: Any) -> Dict[str, Any]:
+    """What a ``done`` event says the turn cost, as it is stored with the reply.
+
+    The live view draws its stats line from the event; a reloaded session has
+    only the stored message, so the same numbers ride on it. Whole
+    non-negative numbers in a sane range and nothing else: this is copied out
+    of a payload into a JSONB row, and a turn that reported no usage stores
+    no usage rather than zeros.
+    """
+    if not isinstance(data, dict):
+        return {}
+
+    def whole(value: Any, ceiling: int) -> Optional[int]:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if 0 <= value <= ceiling else None
+
+    out: Dict[str, Any] = {}
+    usage = data.get('usage')
+    if isinstance(usage, dict):
+        clean = {}
+        for key in _CHAT_USAGE_KEYS:
+            value = whole(usage.get(key), 10 ** 9)
+            if value:
+                clean[key] = value
+        if clean:
+            out['usage'] = clean
+    duration = data.get('duration_s')
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool) and 0 <= duration <= 86400:
+        out['duration_s'] = round(float(duration), 1)
+    tools = whole(data.get('tool_calls'), 10 ** 5)
+    if tools is not None:
+        out['tool_calls'] = tools
+    return out
+
+
 def persist_chat_event(kb, session_id: Optional[int], evt: Dict[str, Any]) -> None:
     """Write one streamed chat event into the session transcript (CFOP-125).
 
@@ -225,6 +265,7 @@ def persist_chat_event(kb, session_id: Optional[int], evt: Dict[str, Any]) -> No
                     session_id, 'assistant', response,
                     backend=str(data.get('backend') or ''),
                     model=str(data.get('model') or ''),
+                    extra=chat_turn_stats(data) or None,
                 )
         elif kind == 'error':
             err = data.get('error') or ''
