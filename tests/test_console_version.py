@@ -148,14 +148,23 @@ def test_no_version_literal_in_web_server():
 
 def test_console_renders_status_version_from_health():
     """updateStatus() is the one fetch of /api/health the page makes; the
-    status bar must take its version from that response."""
+    build the chat shows must come from that response.
+
+    It is shown in the transcript's banner since CFOP-719 (the status bar it
+    sat in repeated the rail's status card): updateStatus keeps the value and
+    fillBanner writes it into #status-version, so a banner drawn later, by New
+    chat, still has it."""
     html = (UI / "index.html").read_text(encoding="utf-8")
     start = html.index("function updateStatus()")
     end = html.index("setInterval(updateStatus", start)
     body = html[start:end]
     assert "/api/health" in body
     assert "data.version" in body
-    assert "status-version" in body
+    assert "BUILD_VERSION =" in body and "fillBanner()" in body
+    fill = html[html.index("function fillBanner()"):]
+    fill = fill[:fill.index("\n        }\n")]
+    assert "getElementById('status-version')" in fill and "BUILD_VERSION" in fill
+    assert 'id="status-version"' in html, "nothing on the page shows the build"
 
 
 # --------------------------------------------------------------------------

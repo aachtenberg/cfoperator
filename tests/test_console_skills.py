@@ -82,7 +82,9 @@ def test_the_array_is_fetched_from_the_agent():
     assert "fetch('/api/skills')" in loader
     assert re.search(r"SLASH_COMMANDS\s*=", loader), "the loader never fills the array"
     assert "renderSkillList()" in loader, "a fetched list that is never drawn"
-    assert re.search(r"^\s*loadSlashCommands\(\);", page, re.M), "nothing calls the loader"
+    # The call may chain what it refreshes once the list is in (the banner's
+    # skill count, CFOP-719); what matters is that the page calls the loader.
+    assert re.search(r"^\s*loadSlashCommands\(\)(\.then\(\w+\))?;", page, re.M), "nothing calls the loader"
 
 
 # --------------------------------------------------------------------------

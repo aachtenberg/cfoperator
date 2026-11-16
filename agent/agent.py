@@ -2230,6 +2230,11 @@ class _ToolLoopStats:
     cached_hits: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    # The prompt size of the loop's LAST model call (CFOP-718): what the
+    # context window holds now. Not input_tokens, which is a sum over every
+    # call of the loop, each of which re-sends the conversation; a five-tool
+    # turn on a 10k prompt sums to 50k and fills a fifth of that.
+    last_prompt_tokens: int = 0
     # Of input_tokens, how many the provider's prompt cache served or stored
     # (CFOP-461). Anthropic reports these outside its input_tokens.
     cache_read_tokens: int = 0
@@ -2281,6 +2286,13 @@ class _ToolLoopStats:
         self.output_tokens += usage.get('output_tokens') or 0
         self.cache_read_tokens += read
         self.cache_write_tokens += write
+        self.note_prompt((usage.get('input_tokens') or 0) + read + write)
+
+    def note_prompt(self, tokens: Any) -> None:
+        """Remember the prompt size of the call that just returned. A provider
+        that reported none (0, missing) leaves the last known size alone."""
+        if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0:
+            self.last_prompt_tokens = tokens
 
     def note_call(self, tool_name: str, tool_args: Any) -> None:
         try:
@@ -2299,6 +2311,7 @@ class _ToolLoopStats:
             'tool_calls': self.tool_calls,
             'input_tokens': self.input_tokens,
             'output_tokens': self.output_tokens,
+            'last_prompt_tokens': self.last_prompt_tokens,
             'cache_read_tokens': self.cache_read_tokens,
             'cache_write_tokens': self.cache_write_tokens,
             'learning_ids': self.learning_ids,
@@ -2318,6 +2331,30 @@ def _prompt_cache_note(result: Dict[str, Any]) -> str:
     read = result.get('cache_read_tokens') or 0
     write = result.get('cache_write_tokens') or 0
     return f" (prompt cache: {read} read, {write} written)" if read or write else ''
+
+
+#: What a console chat turn says about its own cost (CFOP-718), in the order
+#: the console reads them.
+TURN_USAGE_KEYS = ('input_tokens', 'output_tokens', 'last_prompt_tokens', 'context_window')
+
+
+def _turn_usage(result: Any) -> Dict[str, int]:
+    """The usage a chat turn reports to the console, from a tool-loop result.
+
+    The loop has always counted these; the chat's ``done`` payload was built
+    by hand and left them out, so the browser and the stored transcript never
+    saw them. Only numbers that were measured: a key the provider did not
+    report (0, missing, not a whole number) is absent rather than zero, so the
+    console can tell "none" from "not known" and draws nothing for the latter.
+    """
+    if not isinstance(result, dict):
+        return {}
+    usage: Dict[str, int] = {}
+    for key in TURN_USAGE_KEYS:
+        value = result.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            usage[key] = value
+    return usage
 
 
 def _llm_usage_attributes(provider: str, resp) -> Dict[str, Any]:
@@ -10425,6 +10462,25 @@ Only return the JSON array, no other text."""
                   or settings['fallback_window'])
         return int(window * settings['budget_fraction'])
 
+    def _known_context_window(self, provider_type: str, url: Optional[str],
+                              model: Optional[str]) -> Optional[int]:
+        """The context window of the model that just answered, or None.
+
+        Known for Ollama only: the configured ``num_ctx`` when one is sent,
+        else the window the runner loaded the model with. NOT the fallback
+        window ``_ollama_history_budget`` ends on. That constant is right for
+        budgeting history, where some number is needed; shown to an operator
+        as "12k of 32k" it would be a denominator nobody measured. A hosted
+        provider does not report its window, so it has none here and the
+        console draws no gauge (CFOP-718).
+        """
+        if provider_type != 'ollama':
+            return None
+        window = self._ollama_num_ctx()
+        if not window and url and model:
+            window = self._ollama_loaded_context(url, model)
+        return int(window) if window else None
+
     def _ollama_loaded_context(self, url: str, model: str) -> Optional[int]:
         """The context window Ollama loaded ``model`` with, or None.
 
@@ -11336,6 +11392,15 @@ Only return the JSON array, no other text."""
                 result['backend'] = provider_type
                 result['model'] = model_name
                 result['fallback_used'] = idx > 0
+                # What the console's context gauge divides by (CFOP-718).
+                # Only where it is known; a turn never fails over a gauge.
+                try:
+                    window = self._known_context_window(provider_type, url, model_name)
+                except Exception as e:
+                    logger.debug(f"Could not read the context window of {provider_type}/{model_name}: {e}")
+                    window = None
+                if window:
+                    result['context_window'] = window
                 tracing.annotate({
                     'cfop.llm.answered_by': f"{provider_type}/{model_name}",
                     'cfop.llm.rungs_tried': idx + 1,
@@ -11571,6 +11636,7 @@ Only return the JSON array, no other text."""
                     # Extract tokens
                     stats.input_tokens += data.get('prompt_eval_count', 0)
                     stats.output_tokens += data.get('eval_count', 0)
+                    stats.note_prompt(data.get('prompt_eval_count'))
                     stats.note_finish(data.get('done_reason'))
 
                     # Check for tool calls
@@ -11648,6 +11714,7 @@ Only return the JSON array, no other text."""
                     usage = data.get('usage', {})
                     stats.input_tokens += usage.get('prompt_tokens', 0)
                     stats.output_tokens += usage.get('completion_tokens', 0)
+                    stats.note_prompt(usage.get('prompt_tokens'))
 
                     # Check for tool calls
                     choice = data.get('choices', [{}])[0]
@@ -11858,6 +11925,7 @@ Only return the JSON array, no other text."""
                 data = response.json()
                 stats.input_tokens += data.get('prompt_eval_count', 0)
                 stats.output_tokens += data.get('eval_count', 0)
+                stats.note_prompt(data.get('prompt_eval_count'))
                 summary_text = data.get('message', {}).get('content', '')
             elif provider_type in OPENAI_COMPAT_PROVIDERS:
                 api_key, endpoint = self._openai_compat_request_config(provider_type)
@@ -11883,6 +11951,7 @@ Only return the JSON array, no other text."""
                 usage = data.get('usage', {})
                 stats.input_tokens += usage.get('prompt_tokens', 0)
                 stats.output_tokens += usage.get('completion_tokens', 0)
+                stats.note_prompt(usage.get('prompt_tokens'))
                 summary_text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
             elif provider_type == 'anthropic':
                 api_key = self.provider_api_key('anthropic')
@@ -12109,6 +12178,7 @@ IMPORTANT:
                 'cfop.chat.role': tool_policy.actor_role,
                 'cfop.chat.verify_only': bool(verify_only),
             }):
+                started = time.time()
                 try:
                     # Expand shortcut slash commands
                     nonlocal message
@@ -12127,6 +12197,12 @@ IMPORTANT:
                         tracing.annotate({'cfop.chat.kind': 'chat'})
                         result = self._handle_chat_with_stream(message, history, backend, model, event_callback,
                                                                tool_policy=tool_policy)
+                    # How long the operator waited (CFOP-718): the whole turn,
+                    # tools and any wait on a host-write answer included. Here
+                    # and not in the three branches, so every kind of turn
+                    # carries it.
+                    if isinstance(result, dict):
+                        result = dict(result, duration_s=round(time.time() - started, 1))
                     event_queue.put({'event': 'done', 'data': result})
                 except Exception as e:
                     logger.error(f"Stream chat failed: {e}", exc_info=True)
@@ -12192,6 +12268,7 @@ IMPORTANT:
             'tool_calls': result.get('tool_calls', 0),
             'learning_ids': result.get('learning_ids', []),
             'fallback_used': result.get('fallback_used', False),
+            'usage': _turn_usage(result),
         }
 
     @tracing.traced('skill')
@@ -12219,6 +12296,7 @@ IMPORTANT:
                 'backend': result.get('backend', 'unknown'),
                 'model': result.get('model', 'unknown'),
                 'tool_calls': result.get('tool_calls', 0),
+                'usage': _turn_usage(result),
             }
         except RuntimeError as e:
             if "No LLM providers available" in str(e):
