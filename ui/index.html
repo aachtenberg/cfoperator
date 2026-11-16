@@ -1010,9 +1010,13 @@
         function statsText(s, compact) {
             if (!s) return '';
             const parts = [];
-            if (s.input !== null || s.output !== null) {
-                parts.push(`${fmtTokens(s.input || 0)}↑ ${fmtTokens(s.output || 0)}↓`);
-            }
+            // Each side on its own: a turn that reported what it sent and not
+            // what it got back prints "900↑", not "900↑ 0↓". The zero would
+            // be the same claim this function exists not to make (agent
+            // review on #376).
+            const tokens = [s.input !== null ? fmtTokens(s.input) + '↑' : '',
+                            s.output !== null ? fmtTokens(s.output) + '↓' : ''].filter(Boolean).join(' ');
+            if (tokens) parts.push(tokens);
             if (s.seconds !== null) parts.push(s.seconds.toFixed(1) + 's');
             if (s.tools) parts.push(compact ? s.tools + 't' : s.tools + (s.tools === 1 ? ' tool' : ' tools'));
             return parts.join(compact ? ' ' : ' · ');
@@ -1043,7 +1047,10 @@
             if (chatSessionId) parts.push('session #' + chatSessionId);
             if (t.turns) {
                 parts.push(t.turns + (t.turns === 1 ? ' turn' : ' turns'));
-                if (t.input || t.output) parts.push(`${fmtTokens(t.input)}↑ ${fmtTokens(t.output)}↓`);
+                // A side nothing was ever reported for is left out, not shown as 0.
+                const tokens = [t.input ? fmtTokens(t.input) + '↑' : '',
+                                t.output ? fmtTokens(t.output) + '↓' : ''].filter(Boolean).join(' ');
+                if (tokens) parts.push(tokens);
                 if (t.seconds) parts.push(t.seconds.toFixed(1) + 's');
             }
             el.textContent = parts.join(' · ');
@@ -1057,7 +1064,12 @@
         // changes with state is one that gets read (cfassist, CFOP-69).
         function footerHints() {
             const narrow = embedded();
-            if (chatBusy()) return narrow ? 'esc stop' : 'esc stop · typing is kept';
+            // "esc stop" only once there is a turn to stop. Between Send and
+            // the server's answer the box is already busy, but there is no
+            // chat id yet and Escape has nothing to act on; the hint said it
+            // did (agent review on #376).
+            if (inFlightChatId) return narrow ? 'esc stop' : 'esc stop · typing is kept';
+            if (SENDING) return narrow ? 'sending…' : 'sending… · typing is kept';
             const menu = document.getElementById('slash-menu');
             if (menu && menu.classList.contains('active')) {
                 return narrow ? '↑↓ choose · tab accept · esc close'

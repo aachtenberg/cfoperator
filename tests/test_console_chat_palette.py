@@ -188,6 +188,23 @@ const tick=()=>new Promise(r=>setImmediate(r));
   out.menuActive=g('slash-menu').classList.contains('active');
   out.menuHints=text('footer-hints');
 
+  // One side of the count only: the other is left out, not shown as 0.
+  box.setChatInFlight('1111');
+  box.handleChatEvent({event:'done', data:{response:'Half.', backend:'x', model:'y', duration_s:2,
+    usage:{input_tokens:900}}});
+  const half=g('chat-container').children[g('chat-container').children.length-1];
+  out.halfStats=stats(half); out.halfTurn=text('turn-stats');
+
+  // Between Send and the server's answer there is no turn to stop yet.
+  const stopsBefore=stops.length;
+  g('message-input').value='hello';
+  box.sendMessage();
+  out.sendingHints=text('footer-hints'); out.sendingBox=g('palette-box').classList.contains('busy');
+  g('message-input').on.keydown({key:'Escape', preventDefault(){}});
+  out.sendingEscStops=stops.length-stopsBefore;
+  for(let i=0;i<8;i++) await tick();
+  out.afterSendingHints=text('footer-hints'); out.afterSendingBox=g('palette-box').classList.contains('busy');
+
   // A reload rebuilds the totals and the footer from what was stored.
   box.loadChatSession(7);
   for(let i=0;i<8;i++) await tick();
@@ -256,6 +273,16 @@ def test_escape_stops_the_turn_from_the_composer_and_from_the_page(page):
     assert page["escIdle"] == 2, "Escape stopped a chat that was not running"
 
 
+def test_the_hint_does_not_promise_a_stop_before_there_is_a_turn(page):
+    """Agent review on #376. From Send until the server answers, the box is
+    busy but there is no chat id and Escape has nothing to act on. The footer
+    said "esc stop" through that window."""
+    assert page["sendingBox"] is True, "the ants should start with the question"
+    assert page["sendingHints"] == "sending… · typing is kept"
+    assert page["sendingEscStops"] == 0
+    assert page["afterSendingBox"] is False and page["afterSendingHints"].startswith("/ skills")
+
+
 def test_the_open_menu_changes_the_hints(page):
     assert page["menuActive"]
     assert page["menuHints"] == "↑↓ choose · tab accept · enter run · esc close"
@@ -297,6 +324,13 @@ def test_a_turn_that_reported_nothing_draws_nothing(page):
     """Absent is not zero: "0↑ 0↓" would be a claim."""
     assert page["bareStats"] == "N/A/N/A"
     assert page["bareTurnHidden"] is True and page["bareGaugeHidden"] is True
+
+
+def test_one_side_of_the_count_is_not_padded_with_a_zero(page):
+    """Agent review on #376. The agent drops a count the provider did not
+    report (or reported as 0); printing "900↑ 0↓" would put the zero back."""
+    assert page["halfStats"] == "900↑ · 2.0s · x/y"
+    assert page["halfTurn"] == "900↑ 2.0s"
 
 
 def test_the_consoles_own_lines_are_not_answers(page):
