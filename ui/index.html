@@ -1073,7 +1073,11 @@
 
             <div id="input-area">
                 <div id="slash-menu"></div>
-                <textarea id="message-input" rows="1" placeholder="Ask about your infrastructure..." autofocus></textarea>
+                <!-- No autofocus attribute: the script focuses this on the full
+                     page and leaves it alone in the Ask panel, where the host
+                     page decides (CFOP-711). A same-origin frame's autofocus
+                     takes focus from the page around it. -->
+                <textarea id="message-input" rows="1" placeholder="Ask about your infrastructure..."></textarea>
                 <button id="send-button">Send</button>
             </div>
         </div>
@@ -1096,6 +1100,20 @@
         // selection. null until a session exists.
         let chatLlm = null;
         let inFlightChatId = null;  // chat_id of the in-flight /api/chat request, if any
+
+        // Inside the Ask panel's frame (CFOP-711)? The block in <head> marked it.
+        function embedded() {
+            const cl = document.documentElement && document.documentElement.classList;
+            return !!(cl && cl.contains('embed'));
+        }
+        // A handed row is consumed once its question is on its way: the
+        // row comes off the address so a reload does not ask twice. embed=1
+        // stays. It is not part of the hand-off, and without it a reload of
+        // the frame loads the full page into the panel: a rail, the status
+        // timers and an Ask button of its own, 480px wide (Bugbot on #375).
+        function consumeHandoff() {
+            history.replaceState(null, '', location.pathname + (embedded() ? '?embed=1' : '') + location.hash);
+        }
 
         // Toggle the send button between "Send" and "Stop" depending on whether
         // a chat is streaming. While in-flight the button is an enabled Stop button.
@@ -1182,7 +1200,7 @@
                     // reload must not ask twice, but a failure above leaves the
                     // URL intact so a reload retries instead of landing on an
                     // empty chat with the intent gone.
-                    history.replaceState(null, '', location.pathname + location.hash);
+                    consumeHandoff();
                 })
                 .catch(() => toast(`remediation #${id} could not be loaded — reload to retry`, 'err'));
         }
@@ -1219,7 +1237,7 @@
                     document.getElementById('message-input').value = investigationQuestion(row);
                     sendMessage({mode: 'verify'});
                     // Same rule as askAboutRemediation: consumed only once sent.
-                    history.replaceState(null, '', location.pathname + location.hash);
+                    consumeHandoff();
                 })
                 .catch(() => toast(`investigation #${id} could not be loaded — reload to retry`, 'err'));
         }
@@ -2359,6 +2377,14 @@
         // the first question itself; the saved session is left alone rather
         // than appended to. The param is stripped by askAbout* once the
         // question is sent.
+        // The composer has focus on arrival, as the autofocus attribute used
+        // to give it. Not in the Ask panel: there the host page focuses the
+        // chat when the operator opens it, and must keep its own focus when
+        // the panel merely followed them to another page.
+        if (!embedded()) {
+            const composer = document.getElementById('message-input');
+            if (composer && composer.focus) composer.focus();
+        }
         const handoff = new URLSearchParams(location.search);
         const handedRemediation = /^\d+$/.test(handoff.get('remediation') || '')
             ? Number(handoff.get('remediation')) : null;

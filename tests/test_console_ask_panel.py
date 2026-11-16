@@ -53,6 +53,15 @@ const docClick=(href,over)=>{ const e=click(Object.assign({target:linkTo(href)},
 const out={rail:mount.className, fetched:asked.length, hasCFOP:typeof box.window.CFOP.me==='function',
   askDrawn:!!ask(), panelAtLoad:!!panel(), frameAtLoad:frame()?frame().attrs.src:null,
   rememberedAfterLoad:store['cfop.ask.open']||null};
+// The chat's composer, inside the frame. The frame's document is reachable
+// (same origin) once it has loaded; loadFrame() is that moment.
+const composer=el('textarea');
+const loadFrame=()=>{ frame().contentDocument={getElementById:id=>id==='message-input'?composer:null};
+  if(frame().on.load) frame().on.load({}); };
+if(panel()){
+  // Restored from the page before: shown, and focus left where this page put it.
+  out.restoredFrameFocus=frame().focused; loadFrame(); out.restoredComposerFocus=composer.focused;
+}
 if(ask()){
   out.askHref=ask().href; out.askControls=ask().attrs['aria-controls']; out.expanded0=ask().attrs['aria-expanded'];
   // A modified click is the browser's: the link opens the full page.
@@ -64,12 +73,17 @@ if(ask()){
   out.openHidden=panel().hidden; out.frameSrc=frame().attrs.src; out.expanded1=ask().attrs['aria-expanded'];
   out.remembered1=store['cfop.ask.open']||null; out.frameFocused=frame().focused>0;
   out.fullPageLink=/class="cfop-chat-full" href="\/console"/.test(panel().innerHTML);
+  // The operator opened it, so the composer gets the keyboard once the frame has loaded.
+  const before0=composer.focused; loadFrame(); out.composerOnLoad=composer.focused-before0;
+  // A later load of the frame (a reload inside it) is not a reason to take focus again.
+  const before1=composer.focused; frame().on.load({}); out.composerOnLaterLoad=composer.focused-before1;
   // Again closes it, and leaves the loaded frame alone.
   ask().on.click(click());
   out.closedHidden=panel().hidden; out.expanded2=ask().attrs['aria-expanded']; out.remembered2=store['cfop.ask.open']||null;
   frame().attrs.src='(loaded)';
+  const before2=composer.focused;
   ask().on.click(click());
-  out.reopenKeptFrame=frame().attrs.src==='(loaded)';
+  out.reopenKeptFrame=frame().attrs.src==='(loaded)'; out.composerOnReopen=composer.focused-before2;
   // The header's close button, and Escape there, close it and hand focus back.
   const before=ask().focused;
   panel().kids['.cfop-chat-close'].on.click(click());
@@ -164,6 +178,76 @@ def test_the_panel_follows_the_operator_between_pages(tmp_path):
     assert r["remembered1"] == "1" and r["remembered2"] is None
     again = _run(tmp_path, "/remediations", remembered=True)
     assert again["panelAtLoad"] and again["frameAtLoad"] == "/console?embed=1"
+
+
+def test_following_to_the_next_page_does_not_take_the_keyboard(tmp_path):
+    """Bugbot on #375. Restoring the open panel called the same open as a
+    click, which focused the frame: a click on the rail then landed keyboard
+    focus in the chat instead of on the page that was just opened. Restored,
+    the panel shows and takes nothing, at load and once its frame has loaded."""
+    again = _run(tmp_path, "/remediations", remembered=True)
+    assert again["panelAtLoad"]
+    assert again["restoredFrameFocus"] == 0, "restoring the panel moved focus into the frame"
+    assert again["restoredComposerFocus"] == 0, "the restored frame focused its composer once loaded"
+
+
+def test_opening_it_puts_the_keyboard_in_the_composer(tmp_path):
+    """Asked for, it is where the next keystroke should go: the composer, as
+    soon as the frame's document is there, and again on a reopen. A later load
+    inside the frame is not the operator asking."""
+    r = _run(tmp_path, "/events")
+    assert r["frameFocused"]
+    assert r["composerOnLoad"] == 1, "the composer was not focused when the frame finished loading"
+    assert r["composerOnLaterLoad"] == 0, "a reload inside the frame took focus again"
+    assert r["composerOnReopen"] == 1
+
+
+def test_the_embedded_chat_takes_no_focus_of_its_own():
+    """A same-origin frame's autofocus takes focus from the page around it, so
+    the attribute is gone and the script focuses the composer on the full page
+    only. In the panel the host decides (the two tests above)."""
+    html = (UI / "index.html").read_text(encoding="utf-8")
+    textarea = re.search(r'<textarea id="message-input"[^>]*>', html).group(0)
+    assert "autofocus" not in textarea
+    boot = html[html.rindex("<script>"):]
+    assert re.search(r"if \(!embedded\(\)\) \{\s*const composer = document\.getElementById\('message-input'\);", boot), (
+        "the full page no longer focuses its composer on arrival")
+
+
+_HANDOFF_STUB = r"""
+const fs=require('fs');
+const html=fs.readFileSync(process.argv[2],'utf8');
+const grab=name=>{ const m=html.match(new RegExp('function '+name+'\\(\\) \\{[\\s\\S]*?\\n        \\}')); if(!m) throw new Error(name+' not found'); return m[0]; };
+const run=(embed,hash)=>{ const calls=[];
+  const document={documentElement:embed===null?{}:{classList:{contains:c=>embed&&c==='embed'}}};
+  const location={pathname:'/console', hash:hash||''};
+  const history={replaceState:(s,t,u)=>calls.push(u)};
+  new Function('document','location','history', grab('embedded')+grab('consumeHandoff')+'consumeHandoff();')(document,location,history);
+  return calls; };
+console.log(JSON.stringify({full:run(false), embed:run(true), embedHash:run(true,'#x'), bare:run(null)}));
+"""
+
+
+def test_consuming_a_hand_off_keeps_the_frame_embedded(tmp_path):
+    """Bugbot on #375. The row comes off the address so a reload does not ask
+    twice; replaceState to the bare path dropped embed=1 with it, and a reload
+    of the frame then painted the full console (rail, timers, its own Ask
+    button) inside the panel."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    stub = tmp_path / "stub.js"
+    stub.write_text(_HANDOFF_STUB, encoding="utf-8")
+    out = subprocess.run([node, str(stub), str(UI / "index.html")], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    r = json.loads(out.stdout)
+    assert r["full"] == ["/console"], "the full page keeps a query it should have consumed"
+    assert r["embed"] == ["/console?embed=1"]
+    assert r["embedHash"] == ["/console?embed=1#x"]
+    assert r["bare"] == ["/console"], "a document with no classList must not throw"
+    html = (UI / "index.html").read_text(encoding="utf-8")
+    assert html.count("consumeHandoff();") == 2, "both hand-offs (remediation, investigation) consume through the one helper"
+    assert "history.replaceState(null, '', location.pathname + location.hash)" not in html
 
 
 def test_the_chat_page_has_no_panel_and_ends_the_following(tmp_path):

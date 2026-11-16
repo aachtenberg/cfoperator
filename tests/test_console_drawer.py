@@ -238,9 +238,9 @@ def test_the_console_reads_a_handed_row_and_asks_about_it():
     # URL intact so a reload retries rather than landing on an empty chat.
     ask = html[html.index("function askAboutRemediation("):]
     ask = ask[:ask.index("\n        }\n")]
-    assert "history.replaceState(null, '', location.pathname" in ask, (
+    assert "consumeHandoff();" in ask, (
         "the remediation param is not stripped from the URL once consumed")
-    assert ask.index("sendMessage(") < ask.index("history.replaceState("), (
+    assert ask.index("sendMessage(") < ask.index("consumeHandoff();"), (
         "the param is stripped before the question is sent")
     boot = html[html.index("const handedRemediation"):]
     boot = boot[:boot.index("} else if (savedSession)")]
@@ -277,9 +277,9 @@ def test_the_console_reads_a_handed_investigation_and_asks_about_it():
     assert "askAboutInvestigation(" in html
     ask = html[html.index("function askAboutInvestigation("):]
     ask = ask[:ask.index("\n        }\n")]
-    assert "history.replaceState(null, '', location.pathname" in ask, (
+    assert "consumeHandoff();" in ask, (
         "the investigation param is not stripped from the URL once consumed")
-    assert ask.index("sendMessage(") < ask.index("history.replaceState("), (
+    assert ask.index("sendMessage(") < ask.index("consumeHandoff();"), (
         "the param is stripped before the question is sent")
     # The question carries what the drawer showed — the recommendation and the
     # steps — and asks for the checks to be run, not recited.

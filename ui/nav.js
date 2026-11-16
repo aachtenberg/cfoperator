@@ -310,7 +310,7 @@
    * script did not run. */
   var EMBEDDED = /(?:^|[?&])embed=1(?:&|$)/.test(String((window.location && window.location.search) || ''));
   var ASK_OPEN = 'cfop.ask.open';
-  var ASK = { btn: null, panel: null, frame: null, loaded: false };
+  var ASK = { btn: null, panel: null, frame: null, loaded: false, wantFocus: false };
   var FULL_ICON = '<path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/>';
   var CLOSE_ICON = '<path d="M6 6l12 12M18 6L6 18"/>';
   // The only query a drawer hands over: one row, by id.
@@ -348,6 +348,11 @@
     document.body.appendChild(p);
     ASK.panel = p;
     ASK.frame = p.querySelector('iframe');
+    // An open the operator asked for wants the composer; a frame still
+    // loading gets it once it has loaded.
+    if (ASK.frame.addEventListener) {
+      ASK.frame.addEventListener('load', function () { if (ASK.wantFocus) focusChat(); });
+    }
     var close = p.querySelector('.cfop-chat-close');
     if (close) close.addEventListener('click', function () { closeAsk(true); });
     // Reaches the header's controls. Keys typed in the chat belong to the
@@ -355,10 +360,29 @@
     p.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAsk(true); });
   }
 
+  // Put the keyboard in the chat: the frame, then the composer inside it. The
+  // frame is same-origin, so its document can be reached; if it cannot (still
+  // loading, or something refused) the frame's load handler tries again.
+  function focusChat() {
+    try {
+      if (ASK.frame.focus) ASK.frame.focus();
+      var doc = ASK.frame.contentDocument;
+      var composer = doc && doc.getElementById ? doc.getElementById('message-input') : null;
+      if (composer && composer.focus) { composer.focus(); ASK.wantFocus = false; }
+    } catch (e) { /* left for the load handler */ }
+  }
+
   // query: a row to hand over ("investigation=12"), or '' to open the chat as
   // it was. A hand-off always loads its row; a plain open leaves a frame that
   // is already loaded alone, mid-answer included.
-  function openAsk(query) {
+  //
+  // focus: true when the operator opened it (the button, a hand-off link).
+  // False when the panel is only being restored on the next page: it shows,
+  // and focus stays where that page put it. Moving it into the chat there
+  // meant a click on the rail landed the keyboard in the chat instead of on
+  // the page that was just opened (Bugbot on #375). The chat page takes no
+  // focus of its own inside the frame for the same reason.
+  function openAsk(query, focus) {
     if (!ASK.panel) buildAskPanel();
     if (query || !ASK.loaded) {
       ASK.frame.setAttribute('src', CHAT + '?embed=1' + (query ? '&' + query : ''));
@@ -367,11 +391,13 @@
     ASK.panel.hidden = false;
     if (ASK.btn) ASK.btn.setAttribute('aria-expanded', 'true');
     rememberAsk(true);
-    if (ASK.frame.focus) ASK.frame.focus();
+    ASK.wantFocus = !!focus;
+    if (focus) focusChat();
   }
 
   function closeAsk(refocus) {
     if (!ASK.panel) return;
+    ASK.wantFocus = false;
     ASK.panel.hidden = true;
     if (ASK.btn) ASK.btn.setAttribute('aria-expanded', 'false');
     rememberAsk(false);
@@ -398,7 +424,7 @@
     a.addEventListener('click', function (e) {
       if (!plainClick(e)) return;
       e.preventDefault();
-      if (ASK.panel && !ASK.panel.hidden) closeAsk(false); else openAsk('');
+      if (ASK.panel && !ASK.panel.hidden) closeAsk(false); else openAsk('', true);
     });
     document.body.appendChild(a);
     ASK.btn = a;
@@ -411,9 +437,9 @@
       var m = HANDOFF.exec(link.getAttribute('href') || '');
       if (!m) return;
       e.preventDefault();
-      openAsk(m[1]);
+      openAsk(m[1], true);
     });
-    if (askWasOpen()) openAsk('');
+    if (askWasOpen()) openAsk('', false);
   }
 
   function init() {
