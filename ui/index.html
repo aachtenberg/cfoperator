@@ -515,8 +515,9 @@
         }
 
         /* The input, in its box. Green at rest. While the model works the
-           border gives way to a glowing line of marching ants in amber, the
-           colour cfassist's box turns when busy: it reads from across the
+           border gives way to a scanner in amber, the colour cfassist's box
+           turns when busy: one glowing eye with a fading tail, circling
+           clockwise over a dim track (CFOP-721). It reads from across the
            room, which a word in a status line does not. */
         #input-area { flex: none; display: flex; flex-direction: column; padding: 14px 28px 12px; }
         .palette-box {
@@ -535,20 +536,33 @@
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .palette-box .prompt { flex: none; color: var(--accent); font-weight: 700; }
-        .palette-box .ants {
+        /* Every length in the scanner is a share of the border (each moving
+           rect has pathLength="100"), so the narrow Ask panel gets the full
+           page's proportions. The tail is dashes of decreasing length, each
+           faint, stacked so the light builds toward the eye. They all start
+           at the same point of the outline, and that point has to lead. A
+           rect's outline runs clockwise, so the dashes are run backward
+           along it and the overlay is mirrored, which is clockwise again. */
+        .palette-box .scan {
             display: none; position: absolute; inset: 0; width: 100%; height: 100%;
             overflow: visible; pointer-events: none; color: var(--orange);
+            transform: scaleX(-1);
             filter: drop-shadow(0 0 3px currentColor) drop-shadow(0 0 10px currentColor);
         }
-        .palette-box.busy .ants { display: block; }
-        .palette-box .ants rect { stroke: currentColor; animation: palette-ants .9s linear infinite; }
-        /* -36 is two dash periods (10 on, 8 off), so the loop has no seam. */
-        @keyframes palette-ants { to { stroke-dashoffset: -36; } }
+        .palette-box.busy .scan { display: block; }
+        .palette-box .scan rect { fill: none; stroke: currentColor; stroke-width: 1.5; }
+        .palette-box .scan .track, .palette-box .scan .tail { opacity: .2; }
+        .palette-box .scan .eye { stroke-width: 2.5; stroke-linecap: round; }
+        .palette-box .scan .tail, .palette-box .scan .eye { animation: palette-scan 2.8s linear infinite; }
+        /* 100 is the whole border: one lap, so the loop has no seam. */
+        @keyframes palette-scan { to { stroke-dashoffset: 100; } }
         @keyframes palette-blink { 50% { opacity: .3; } }
-        /* Still, for anyone who asked for less motion: the ants stay drawn,
-           as a dashed amber border, and that is the signal. */
+        /* Still, for anyone who asked for less motion: no eye and no tail,
+           the track at full strength. A solid amber border is the signal. */
         @media (prefers-reduced-motion: reduce) {
-            .palette-box .ants rect, #thinking .thinking-text, .tool-card:not(.done) .tc-status { animation: none; }
+            .palette-box .scan .tail, .palette-box .scan .eye { display: none; }
+            .palette-box .scan .track { opacity: 1; }
+            #thinking .thinking-text, .tool-card:not(.done) .tc-status { animation: none; }
         }
         #message-input {
             flex: 1; min-width: 0; min-height: 44px; padding: 11px 0;
@@ -903,8 +917,25 @@
                 <div class="palette-box" id="palette-box">
                     <!-- What the session is attached to, in the box's top edge. -->
                     <span class="box-title" id="box-title" hidden></span>
-                    <!-- The border while the model works: marching ants. -->
-                    <svg class="ants" aria-hidden="true" width="100%" height="100%"><rect x="0" y="0" width="100%" height="100%" rx="12" fill="none" stroke-width="1.5" stroke-dasharray="10 8" stroke-linecap="round"></rect></svg>
+                    <!-- The border while the model works: a dim track, a tail
+                         of ever shorter dashes, and the eye. A dash and its
+                         gap are percentages of the border and add up to 100. -->
+                    <svg class="scan" aria-hidden="true" width="100%" height="100%">
+                        <rect class="track" width="100%" height="100%" rx="12"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="14 86"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="11.76 88.24"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="9.72 90.28"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="7.88 92.12"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="6.22 93.78"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="4.76 95.24"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="3.5 96.5"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="2.43 97.57"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="1.56 98.44"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="0.88 99.12"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="0.39 99.61"></rect>
+                        <rect class="tail" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="0.1 99.9"></rect>
+                        <rect class="eye" width="100%" height="100%" rx="12" pathLength="100" stroke-dasharray="1.6 98.4"></rect>
+                    </svg>
                     <span class="prompt" aria-hidden="true">&gt;</span>
                     <!-- No autofocus attribute: the script focuses this on the full
                          page and leaves it alone in the Ask panel, where the host
@@ -1120,7 +1151,7 @@
         }
 
         // Send becomes Stop while a turn is streaming, and the box shows it:
-        // the ants run from the moment the question leaves. The button is
+        // the scanner runs from the moment the question leaves. The button is
         // two icons, so the state goes on its class and its label, not its
         // text.
         function syncBusy() {
@@ -1627,7 +1658,7 @@
             // "/command" left open, or it and its hints outlive the text.
             updateSlashMenu();
             saveDraft('');
-            // The ants start with the question, not with the server's reply.
+            // The scanner starts with the question, not with the server's reply.
             // After the menu is closed, so the footer's hint is the turn's.
             syncBusy();
 

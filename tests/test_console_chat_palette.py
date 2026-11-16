@@ -287,7 +287,7 @@ def test_at_rest_the_footer_says_how_to_start(page):
 
 
 def test_while_a_turn_runs_the_box_and_the_button_show_it(page):
-    """The ants are the box's 'busy' class; the button is two icons, so which
+    """The scanner is the box's 'busy' class; the button is two icons, so which
     one shows is its 'stop' class and what it is called is its label."""
     assert page["busyBox"] and page["busyStop"] and page["busyLabel"] == "Stop"
     assert page["busyHints"] == "esc stop · typing is kept"
@@ -307,7 +307,7 @@ def test_the_hint_does_not_promise_a_stop_before_there_is_a_turn(page):
     """Agent review on #376. From Send until the server answers, the box is
     busy but there is no chat id and Escape has nothing to act on. The footer
     said "esc stop" through that window."""
-    assert page["sendingBox"] is True, "the ants should start with the question"
+    assert page["sendingBox"] is True, "the scanner should start with the question"
     assert page["sendingHints"] == "sending… · typing is kept"
     assert page["sendingEscStops"] == 0
     assert page["afterSendingBox"] is False and page["afterSendingHints"].startswith("/ skills")
@@ -470,16 +470,54 @@ def test_send_and_stop_are_the_icons_alone():
     assert "background: transparent" in rule and "border: 0" in rule and "50%" not in rule
 
 
-def test_the_ants_run_only_while_busy_and_stand_still_on_request():
+def _scanner():
+    """The busy border's rects as (class, dash, gap, has pathLength), in order."""
+    svg = re.search(r'<svg class="scan".*?</svg>', html(), re.S).group(0)
+    rects = []
+    for cls, attrs in re.findall(r'<rect class="(\w+)"([^>]*)>', svg):
+        dash = re.search(r'stroke-dasharray="([\d.]+) ([\d.]+)"', attrs)
+        rects.append((cls, float(dash.group(1)) if dash else None,
+                      float(dash.group(2)) if dash else None, 'pathLength="100"' in attrs))
+    return rects
+
+
+def test_the_scanner_runs_only_while_busy_and_stands_still_on_request():
     page = html()
-    assert re.search(r"\.palette-box \.ants \{[^}]*display: none", page)
-    assert re.search(r"\.palette-box\.busy \.ants \{ display: block; \}", page)
-    # One loop of the animation is a whole number of dash periods, or it jumps.
-    dash = re.search(r'stroke-dasharray="(\d+) (\d+)"', page)
-    offset = int(re.search(r"@keyframes palette-ants \{ to \{ stroke-dashoffset: -(\d+);", page).group(1))
-    assert offset % (int(dash.group(1)) + int(dash.group(2))) == 0
+    assert re.search(r"\.palette-box \.scan \{[^}]*display: none", page)
+    assert re.search(r"\.palette-box\.busy \.scan \{ display: block; \}", page)
     still = re.search(r"@media \(prefers-reduced-motion: reduce\) \{(.*?)\n        \}", page, re.S).group(1)
-    assert ".palette-box .ants rect" in still and "animation: none" in still
+    assert ".palette-box .scan .tail, .palette-box .scan .eye { display: none; }" in still
+    assert ".palette-box .scan .track { opacity: 1; }" in still, "nothing is left to say the model is working"
+
+
+def test_the_scanner_is_one_eye_on_a_seamless_lap():
+    """CFOP-721. A dash and its gap are one border long, and the animation
+    moves them by one border: anything else and the eye jumps where the loop
+    restarts, or a second eye appears on a wide box."""
+    page = html()
+    lap = float(re.search(r"@keyframes palette-scan \{ to \{ stroke-dashoffset: ([\d.]+);", page).group(1))
+    rects = _scanner()
+    assert [cls for cls, *_ in rects].count("track") == 1, "the box has no outline while the eye is away"
+    moving = [r for r in rects if r[0] != "track"]
+    assert [cls for cls, *_ in moving].count("eye") == 1 and moving[-1][0] == "eye", "the eye is drawn last, on top"
+    for cls, dash, gap, scaled in moving:
+        assert scaled, f"a {cls} without pathLength is measured in pixels, not in shares of the border"
+        assert dash + gap == pytest.approx(lap), f"{cls} {dash}: its pattern is not one lap"
+    tail = [dash for cls, dash, *_ in moving if cls == "tail"]
+    assert len(tail) > 1 and tail == sorted(tail, reverse=True) and len(set(tail)) == len(tail), \
+        "the tail fades because each dash is shorter than the one under it"
+    assert moving[-1][1] < tail[0], "the eye is longer than its tail"
+
+
+def test_the_scanner_goes_clockwise_with_the_eye_in_front():
+    """The dashes share their start, so they are run backward along the
+    rect's clockwise outline (a positive offset) for that start to lead, and
+    the overlay is mirrored to make the lap clockwise. Either half alone is
+    wrong: counter-clockwise, or clockwise with the tail in front."""
+    page = html()
+    rule = re.search(r"\.palette-box \.scan \{[^}]*\}", page).group(0)
+    assert "transform: scaleX(-1)" in rule
+    assert re.search(r"@keyframes palette-scan \{ to \{ stroke-dashoffset: \d", page), "the dashes run forward"
 
 
 def test_the_model_picker_moved_to_the_footer_and_the_status_bar_went():
