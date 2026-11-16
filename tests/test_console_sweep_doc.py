@@ -119,7 +119,34 @@ def test_an_alert_that_is_a_document_shows_its_first_line(tmp_path):
 def test_the_events_row_and_drawer_title_use_it():
     page = read("events.html")
     assert "esc(summaryLine(r.summary).slice(0,160))" in page, "the row prints the summary as it came"
-    assert "const title=summaryLine(a.summary)||a.alert_id;" in page, "the drawer's title is the whole document"
+    assert "const title=summaryLine(a.summary)||a.alert_id" in page, "the drawer's title is the whole document"
+
+
+def test_the_events_drawer_keeps_the_whole_document(tmp_path):
+    """Bugbot on #375. The first cut gave the drawer the first line too, title
+    and copy control both, on the claim that the rest was in the alert details.
+    It is not (those are the finding's category, remediation and evidence), so
+    the rest of a document-alert was neither shown nor copyable there. The
+    drawer renders the whole summary and the copy control copies it."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    page = read("events.html")
+    fn = re.search(r"^function summaryBody\(s\)\{.*?\n\}", page, re.S | re.M)
+    assert fn, "events.html has no summaryBody()"
+    doc = "# Morning Infrastructure Summary\n\n### Overnight\n- **`api-server`** restarted"
+    values = [doc, "  " + doc + "\n\n", "one line only", "one line, trailing newline\n", "\n\n# just a heading\n", None, ""]
+    stub = tmp_path / "stub.js"
+    stub.write_text(fn.group(0) + "\nconsole.log(JSON.stringify(" + json.dumps(values) + ".map(summaryBody)));",
+                    encoding="utf-8")
+    out = subprocess.run([node, str(stub)], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == [doc, doc, "", "", "", "", ""], (
+        "a document comes back whole; an ordinary one-line summary gets no second copy of itself")
+    assert "copyIcon('summary',{text:body||title})" in page, "the copy control copies the first line of a document"
+    assert '<div class="md" id="alert-summary">${renderMarkdown(body)}</div>' in page, (
+        "the drawer does not show the document")
+    assert 'src="/vendor/marked.min.js"' in page, "events.html would print the document as escaped source"
 
 
 _STUB = r"""

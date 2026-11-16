@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CFOperator · Events</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<!-- An alert's summary can be a markdown document (CFOP-708); same vendored marked as the chat page. -->
+<script src="/vendor/marked.min.js"></script>
 <!-- Tokens, the rail and the shared kit: one copy, see ui/console.css. -->
 <link rel="stylesheet" href="/console.css">
 <style>
@@ -257,11 +259,21 @@ function outcomeCell(r){
 // document as its finding: the morning summary (CFOP-708). Run together in a
 // row that read "# Morning Infrastructure Summary - … ### Overnight Activity
 // Highlights - **`api-server`…". The row and the drawer's title show the
-// document's first line without its heading marks; the text itself is in the
-// drawer, under Outcome and in the alert details.
+// document's first line without its heading marks.
 function summaryLine(s){
   const first=String(s==null?'':s).split(/\r?\n/).map(x=>x.trim()).find(Boolean)||'';
   return first.replace(/^#{1,6}\s+/,'').replace(/\s+#+$/,'');
+}
+// The whole summary, when it is more than that first line; '' for the
+// ordinary one-line alert. The drawer shows it, rendered, and it is what the
+// title's copy control copies. An earlier cut of this left the drawer with
+// the first line only, on the claim that the rest was in the alert details.
+// It is not: those are the finding's category, remediation and evidence. The
+// only other copy was whatever an action message happened to quote (Bugbot
+// on #375).
+function summaryBody(s){
+  const full=String(s==null?'':s).trim();
+  return /\n\s*\S/.test(full)?full:'';
 }
 function dot(text, varname){ return `<span class="sev" style="--tone:var(${varname})">${esc(text)||'—'}</span>`; }
 function sourceLabel(s){ return s==='cfoperator-sweep'?'sweep':(s||'—'); }
@@ -425,9 +437,9 @@ function renderDetail(a, events){
   const links=['html_url','url','investigation_url'].map(k=>safeUrl(det[k])).filter(Boolean);
   const source=(events.find(e=>(e.payload||{}).alert)||{}).payload;
   const alertDetails=((source||{}).alert||{}).details||{};
-  const title=summaryLine(a.summary)||a.alert_id;
+  const title=summaryLine(a.summary)||a.alert_id, body=summaryBody(a.summary);
   return `${closeButton()}
-    <h2 id="detail-title">${esc(title)}${copyIcon('summary',{text:title})}</h2>
+    <h2 id="detail-title">${esc(title)}${copyIcon('summary',{text:body||title})}</h2>
     <div class="kv">${badge(a.status, STATUS_COLOR[a.status]||'--text-muted', gloss('event',a.status))}
       ${a.action?badge(a.action, ACTION_COLOR[a.action]||'--text-muted', gloss('decision',a.action)):''}
       ${badge(a.severity, SEVERITY_COLOR[a.severity]||'--text-muted')}
@@ -437,6 +449,7 @@ function renderDetail(a, events){
     <div class="kv"><b>first seen</b> ${fmtTs(a.first_event_at,{seconds:true})}</div>
     <div class="kv"><b>latest</b> ${fmtTs(a.latest_event_at,{seconds:true})} <span class="muted">· ${esc(a.event_count)} events</span></div>
     ${a.reason?`<div class="kv"><b>reason</b> ${esc(a.reason)}</div>`:''}
+    ${body?`<h3>Summary</h3><div class="md" id="alert-summary">${renderMarkdown(body)}</div>`:''}
     ${dec.action?`<h3>Triage</h3>
       <div class="kv"><b>decision</b> ${badge(dec.action, ACTION_COLOR[dec.action]||'--text-muted', gloss('decision',dec.action))}${dec.confidence!=null?' <span class="muted">confidence '+esc(dec.confidence)+'</span>':''}</div>
       ${llm.triaged?`<div class="kv"><b>triaged by</b> <span class="mono">${esc(llm.triaged)}</span></div>`:''}
