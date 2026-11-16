@@ -9,6 +9,7 @@ post-hoc. MagicMock operator; the HTTP client functions are patched at the
 module that calls them.
 """
 
+import copy
 import logging
 import os
 import sys
@@ -214,6 +215,41 @@ def test_reconcile_of_a_still_open_item_only_stamps_the_poll():
     op.kb.update_remediation_status.assert_not_called()
     tr = _tracker_written(op.kb.merge_remediation_result)
     assert tr["checked_at"] and tr["synced_status"] == "filed"
+
+
+# --- a success ends the failure streak -----------------------------------
+
+@pytest.mark.parametrize("row, got", [
+    (_row(status="needs-human"), None),                                  # create
+    (_with_ref("needs-human", synced="queued"), None),                   # repark
+    (_with_ref("needs-human", synced="filed"), None),                    # refile
+    (_with_ref("queued", synced="filed"), None),                         # comment
+    (_with_ref("resolved", synced="filed"), None),                       # transition
+    (_with_ref("filed"), {"state": "open", "key": "CFOP-1"}),            # reconcile, still open
+    (_with_ref("filed"), {"state": "resolved", "key": "CFOP-1"}),        # reconcile, closed as done
+    (_with_ref("filed"), {"state": "rejected", "key": "CFOP-1"}),        # reconcile, cancelled
+    (_with_ref("filed"), None),                                          # reconcile, deleted
+], ids=["create", "repark", "refile", "comment", "transition",
+        "reconcile-open", "reconcile-resolved", "reconcile-rejected", "reconcile-deleted"])
+def test_any_call_that_succeeds_clears_the_error_and_its_count(row, got):
+    """``error_count`` is the streak the backoff reads, not a lifetime total.
+
+    Every path through a successful call has to zero it. The still-open poll
+    once cleared ``error`` alone (CFOP-723), and it is the one path a filed
+    row takes on nearly every tick, so the count only ever grew.
+    """
+    row = copy.deepcopy(row)
+    row["result"].setdefault("tracker", {}).update(
+        error="get failed (400): plane: get failed (HTTP 0: reset)", error_count=3, error_at="t1")
+    op = _op()
+    with patch.object(ts, "tracker_create", return_value=CREATED), \
+            patch.object(ts, "tracker_comment"), patch.object(ts, "tracker_transition"), \
+            patch.object(ts, "tracker_get", return_value=got):
+        ts.sync_tracker_row(op, row, "http://t")
+    writes = [m for m in (op.kb.update_remediation_status, op.kb.merge_remediation_result) if m.called]
+    assert len(writes) == 1, "a successful call is one KB write"
+    tr = _tracker_written(writes[0])
+    assert tr["error"] is None and tr["error_count"] == 0
 
 
 # --- the tick ------------------------------------------------------------
