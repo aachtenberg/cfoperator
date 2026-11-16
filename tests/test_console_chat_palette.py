@@ -235,6 +235,15 @@ const tick=()=>new Promise(r=>setImmediate(r));
   out.flightStopsAfterSecondEsc=stops.length-stops0;
   g('message-input').value='';
 
+  // The composer's rows. What a textarea of n lines measures comes from the
+  // page's own rule: its padding, top and bottom, and its line height.
+  const rule=html.match(/#message-input \{[^}]*\}/)[0];
+  const pad=+rule.match(/padding: (\d+)px 0/)[1], line=+rule.match(/line-height: (\d+)px/)[1];
+  const typed=n=>{ const t=g('message-input'); t.value='x'; t.scrollHeight=2*pad+n*line;
+                   t.on.input({target:t}); return t.rows; };
+  out.rows=[typed(1), typed(2), typed(3), typed(40)];
+  g('message-input').value='';
+
   // A reload rebuilds the totals and the footer from what was stored.
   box.loadChatSession(7);
   for(let i=0;i<8;i++) await tick();
@@ -293,6 +302,23 @@ def test_while_a_turn_runs_the_box_and_the_button_show_it(page):
     assert page["busyHints"] == "esc stop · typing is kept"
     assert page["doneBox"] is False, "the box still shows a turn running after it finished"
     assert page["doneHints"].startswith("/ skills")
+
+
+def test_one_line_of_text_is_one_row(page):
+    """CFOP-722. The textarea's measured height includes its padding, and
+    counting that as a line made the box two rows tall at the first
+    character: the text sat on the top row, above the send arrow. The
+    measurements fed in come from the page's own CSS, so the script's sum
+    cannot drift from the rule it mirrors."""
+    assert page["rows"][0] == 1, "one line of text is not one row"
+    assert page["rows"] == [1, 2, 3, 6], "the box grows a row a line, and stops at six"
+
+
+def test_the_box_has_no_prompt_glyph_to_sit_beside_the_wrong_line():
+    """The operator asked for the '>' in the box to go. Centred, it stood
+    beside the middle of a question longer than one line."""
+    box = re.search(r'<div class="palette-box" id="palette-box">(.*?)<div id="slash-menu">', html(), re.S).group(1)
+    assert "&gt;" not in box and 'class="prompt"' not in box
 
 
 def test_escape_stops_the_turn_from_the_composer_and_from_the_page(page):
