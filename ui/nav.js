@@ -363,9 +363,16 @@
   // Put the keyboard in the chat: the frame, then the composer inside it. The
   // frame is same-origin, so its document can be reached; if it cannot (still
   // loading, or something refused) the frame's load handler tries again.
-  function focusChat() {
+  //
+  // loading: the frame was just given a new address. The document in it now
+  // is about to be replaced, so only the frame is focused and the composer is
+  // left to the load handler. Focusing the old composer here cleared
+  // wantFocus, and a hand-off into an already-open panel then lost the
+  // keyboard when the new document arrived (agent review on #375).
+  function focusChat(loading) {
     try {
       if (ASK.frame.focus) ASK.frame.focus();
+      if (loading) return;
       var doc = ASK.frame.contentDocument;
       var composer = doc && doc.getElementById ? doc.getElementById('message-input') : null;
       if (composer && composer.focus) { composer.focus(); ASK.wantFocus = false; }
@@ -384,7 +391,8 @@
   // focus of its own inside the frame for the same reason.
   function openAsk(query, focus) {
     if (!ASK.panel) buildAskPanel();
-    if (query || !ASK.loaded) {
+    var loading = !!(query || !ASK.loaded);
+    if (loading) {
       ASK.frame.setAttribute('src', CHAT + '?embed=1' + (query ? '&' + query : ''));
       ASK.loaded = true;
     }
@@ -392,7 +400,7 @@
     if (ASK.btn) ASK.btn.setAttribute('aria-expanded', 'true');
     rememberAsk(true);
     ASK.wantFocus = !!focus;
-    if (focus) focusChat();
+    if (focus) focusChat(loading);
   }
 
   function closeAsk(refocus) {

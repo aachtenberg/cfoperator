@@ -93,8 +93,14 @@ if(ask()){
   out.escapeHides=panel().hidden;
   panel().on.keydown({key:'a'});
   // A drawer's hand-off link opens the panel on that row.
+  // The frame here already holds a loaded chat. The hand-off gives it a new
+  // address, so the composer in it now is about to go: it is the new
+  // document's composer that gets the keyboard, when that document is there.
+  const before3=composer.focused;
   const h=docClick('/console?investigation=2272');
   out.handoffPrevented=h.prevented; out.handoffSrc=frame().attrs.src; out.handoffOpen=!panel().hidden;
+  out.handoffFocusBeforeLoad=composer.focused-before3;
+  frame().on.load({}); out.handoffFocusAfterLoad=composer.focused-before3;
   const r=docClick('/console?remediation=80');
   out.remediationSrc=frame().attrs.src;
   // ...and only that: anything else on the link is left to the browser.
@@ -200,6 +206,16 @@ def test_opening_it_puts_the_keyboard_in_the_composer(tmp_path):
     assert r["composerOnLoad"] == 1, "the composer was not focused when the frame finished loading"
     assert r["composerOnLaterLoad"] == 0, "a reload inside the frame took focus again"
     assert r["composerOnReopen"] == 1
+
+
+def test_a_hand_off_into_an_open_panel_focuses_the_new_chat(tmp_path):
+    """Agent review on #375. With the panel already open on a loaded chat, a
+    drawer's hand-off gave the frame a new address and at once focused the
+    composer of the document about to be replaced, which also marked the
+    focus as done. The new document then loaded with the keyboard nowhere."""
+    r = _run(tmp_path, "/investigations")
+    assert r["handoffFocusBeforeLoad"] == 0, "the outgoing document's composer was focused"
+    assert r["handoffFocusAfterLoad"] == 1, "the handed-over chat did not get the keyboard once loaded"
 
 
 def test_the_embedded_chat_takes_no_focus_of_its_own():
