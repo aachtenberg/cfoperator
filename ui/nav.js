@@ -36,12 +36,15 @@
   // caller is an admin (or auth is disabled). Account stays for every role —
   // that is where members change their password and manage their own tokens.
   //
-  // "/" is the chat and stays the chat: /?investigation= and /?remediation=
-  // are how a drawer hands its row over, so Inbox lives at /inbox.
+  // The console opens on Inbox and the chat is /console (CFOP-710). "/" is no
+  // page of its own: the server redirects it to /inbox, or to /console with
+  // the row when it carries an old /?investigation= or /?remediation=
+  // hand-off.
+  var CHAT = '/console';
   var SECTIONS = [
     { href: '/inbox', label: 'Inbox', count: true,
       icon: '<path d="M3 13h5l2 3h4l2-3h5M5 5h14l2 8v6H3v-6z"/>' },
-    { href: '/', label: 'Console',
+    { href: '/console', label: 'Console',
       icon: '<path d="M4 6l5 5-5 5M12 18h8"/>' },
     { href: '/investigations', label: 'Investigations',
       icon: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/>' },
@@ -90,8 +93,9 @@
    * hash — so it is normalised before matching and /account/ lands on /account.
    *
    * Matching is on a path-segment boundary rather than a bare prefix, so
-   * /account cannot claim a sibling like /accountsomething. "/" is exact-only
-   * for the same reason: it is a prefix of every other section.
+   * /account cannot claim a sibling like /accountsomething. A section at "/"
+   * would be exact-only for the same reason (it is a prefix of every other
+   * one); none is there since the chat moved to /console (CFOP-710).
    *
    * Longest match wins. Matching walks every section (including adminOnly) so
    * /admin is recognised even before identity arrives. */
@@ -123,12 +127,23 @@
   }
 
   /* ---- what "waiting on a human" means --------------------------------
-   * An investigation the agent ended on needs_action that no operator has
-   * triaged yet. One rule, here, because the rail's count and the Inbox
-   * page's queue must be the same number: the page calls CFOP.needsAction. */
+   * An investigation the agent ended on needs_action, that no operator has
+   * triaged, and whose recommendation nobody has decided yet. One rule, here,
+   * because the rail's count and the Inbox page's queue must be the same
+   * number: the page calls CFOP.needsAction.
+   *
+   * The third clause is CFOP-709. A remediation that was resolved or rejected
+   * IS the decision on that investigation's recommendation, and a filed one
+   * is in the tracker (with its own card on Inbox); asking for an Ack on top
+   * asked for the same decision twice. Measured the day it changed: 39 rows
+   * in the queue, 20 resolved, 12 rejected, 2 filed, 5 actually undecided —
+   * and not one had ever been acked. remediation_status is on the list row
+   * (the server links it); a row without one has no remediation and waits. */
+  var SETTLED = { resolved: true, rejected: true, filed: true };
   function needsAction(rows) {
     return (rows || []).filter(function (r) {
-      return r && r.outcome === 'needs_action' && !r.triage_action;
+      return r && r.outcome === 'needs_action' && !r.triage_action &&
+        !SETTLED[r.remediation_status];
     });
   }
 
@@ -167,12 +182,16 @@
     var rows = '<div class="conn' + (up ? '' : ' down') + '"><i aria-hidden="true"></i>' +
       (up ? 'Connected' : 'Disconnected') +
       (up && STATUS.uptime ? '<span class="up">' + esc(STATUS.uptime) + '</span>' : '') + '</div>';
-    function row(label, value, quiet) {
-      return value ? '<div class="row"><span>' + label + '</span><span class="mono' +
+    // Two titles a row (CFOP-707): the label's says what the line is; the
+    // value's is the value itself, which the shared tooltip shows only when
+    // the card has cut it short.
+    function row(label, value, quiet, tip) {
+      return value ? '<div class="row"><span title="' + esc(tip) + '">' + label + '</span><span class="mono' +
         (quiet ? ' quiet' : '') + '" title="' + esc(value) + '">' + esc(value) + '</span></div>' : '';
     }
-    return rows + row('Provider', STATUS.provider) + row('Last sweep', STATUS.sweep) +
-      row('Build', STATUS.version, true);
+    return rows + row('Provider', STATUS.provider, false, 'The LLM backend the agent is set to use.') +
+      row('Last sweep', STATUS.sweep, false, 'The latest sweep of the fleet: its number and when it ran.') +
+      row('Build', STATUS.version, true, 'The version of the agent that is answering.');
   }
 
   function paintStatus() {
@@ -272,20 +291,169 @@
     if (btn) btn.addEventListener('click', function () { logout(btn); });
   }
 
-  /* Ask CFOperator: the chat, one click from any page. Not drawn on the chat
-   * itself. A link, not a button — it is navigation. */
+  /* ---- Ask CFOperator: the chat, floating over the page (CFOP-711) ------
+   * The round button on every page but the chat, and the drawers' "Ask about
+   * this" links, used to navigate to the chat — replacing the page being
+   * read, which is the page the question is about. A plain click now opens
+   * the chat in a panel over that page.
+   *
+   * The panel is the chat page itself, in a same-origin frame, asked for with
+   * ?embed=1 so it leaves out what the host page already has (index.html
+   * drops its title and status bar; this file draws no rail inside it). One
+   * chat: sessions, the seat chip, host-write confirmation and polling are
+   * that page's own, not a second copy here. The chat restores its last
+   * session from localStorage, so the panel and the full page are the same
+   * conversation.
+   *
+   * Everything that opens it stays a link to /console: a middle or modified
+   * click opens the full page as before, and so does a browser where this
+   * script did not run. */
+  var EMBEDDED = /(?:^|[?&])embed=1(?:&|$)/.test(String((window.location && window.location.search) || ''));
+  var ASK_OPEN = 'cfop.ask.open';
+  var ASK = { btn: null, panel: null, frame: null, loaded: false, wantFocus: false };
+  var FULL_ICON = '<path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/>';
+  var CLOSE_ICON = '<path d="M6 6l12 12M18 6L6 18"/>';
+  // The only query a drawer hands over: one row, by id.
+  var HANDOFF = /^\/console\?((?:investigation|remediation)=\d+)$/;
+
+  function plainClick(e) {
+    return !e.defaultPrevented && !e.button && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+  }
+
+  // Open or closed is remembered for the tab, so the panel follows the
+  // operator from page to page instead of closing on every navigation.
+  function rememberAsk(open) {
+    try {
+      if (open) sessionStorage.setItem(ASK_OPEN, '1'); else sessionStorage.removeItem(ASK_OPEN);
+    } catch (e) { /* no storage: the panel just does not follow */ }
+  }
+  function askWasOpen() {
+    try { return sessionStorage.getItem(ASK_OPEN) === '1'; } catch (e) { return false; }
+  }
+
+  function buildAskPanel() {
+    var p = document.createElement('section');
+    p.className = 'cfop-chat';
+    p.id = 'cfop-chat';
+    p.hidden = true;
+    p.setAttribute('role', 'dialog');
+    p.setAttribute('aria-label', 'Ask CFOperator');
+    p.innerHTML =
+      '<div class="cfop-chat-head"><span class="t">' + svg(BRAND_MARK) + 'Ask CFOperator</span>' +
+      '<a class="cfop-chat-full" href="' + CHAT + '" aria-label="Open the chat as a full page" ' +
+      'title="Open the chat as a full page">' + svg(FULL_ICON) + '</a>' +
+      '<button type="button" class="cfop-chat-close" aria-label="Close the chat" ' +
+      'title="Close. The conversation is kept.">' + svg(CLOSE_ICON) + '</button></div>' +
+      '<iframe class="cfop-chat-frame" title="CFOperator chat"></iframe>';
+    document.body.appendChild(p);
+    ASK.panel = p;
+    ASK.frame = p.querySelector('iframe');
+    // An open the operator asked for wants the composer; a frame still
+    // loading gets it once it has loaded.
+    if (ASK.frame.addEventListener) {
+      ASK.frame.addEventListener('load', function () { if (ASK.wantFocus) focusChat(); });
+    }
+    var close = p.querySelector('.cfop-chat-close');
+    if (close) close.addEventListener('click', function () { closeAsk(true); });
+    // Reaches the header's controls. Keys typed in the chat belong to the
+    // frame, where Escape already closes the chat's own menus.
+    p.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAsk(true); });
+  }
+
+  // Put the keyboard in the chat: the frame, then the composer inside it. The
+  // frame is same-origin, so its document can be reached; if it cannot (still
+  // loading, or something refused) the frame's load handler tries again.
+  //
+  // loading: the frame was just given a new address. The document in it now
+  // is about to be replaced, so only the frame is focused and the composer is
+  // left to the load handler. Focusing the old composer here cleared
+  // wantFocus, and a hand-off into an already-open panel then lost the
+  // keyboard when the new document arrived (agent review on #375).
+  function focusChat(loading) {
+    try {
+      if (ASK.frame.focus) ASK.frame.focus();
+      if (loading) return;
+      var doc = ASK.frame.contentDocument;
+      var composer = doc && doc.getElementById ? doc.getElementById('message-input') : null;
+      if (composer && composer.focus) { composer.focus(); ASK.wantFocus = false; }
+    } catch (e) { /* left for the load handler */ }
+  }
+
+  // query: a row to hand over ("investigation=12"), or '' to open the chat as
+  // it was. A hand-off always loads its row; a plain open leaves a frame that
+  // is already loaded alone, mid-answer included.
+  //
+  // focus: true when the operator opened it (the button, a hand-off link).
+  // False when the panel is only being restored on the next page: it shows,
+  // and focus stays where that page put it. Moving it into the chat there
+  // meant a click on the rail landed the keyboard in the chat instead of on
+  // the page that was just opened (Bugbot on #375). The chat page takes no
+  // focus of its own inside the frame for the same reason.
+  function openAsk(query, focus) {
+    if (!ASK.panel) buildAskPanel();
+    var loading = !!(query || !ASK.loaded);
+    if (loading) {
+      ASK.frame.setAttribute('src', CHAT + '?embed=1' + (query ? '&' + query : ''));
+      ASK.loaded = true;
+    }
+    ASK.panel.hidden = false;
+    if (ASK.btn) ASK.btn.setAttribute('aria-expanded', 'true');
+    rememberAsk(true);
+    ASK.wantFocus = !!focus;
+    if (focus) focusChat(loading);
+  }
+
+  function closeAsk(refocus) {
+    if (!ASK.panel) return;
+    ASK.wantFocus = false;
+    ASK.panel.hidden = true;
+    if (ASK.btn) ASK.btn.setAttribute('aria-expanded', 'false');
+    rememberAsk(false);
+    if (refocus && ASK.btn && ASK.btn.focus) ASK.btn.focus();
+  }
+
   function mountAsk() {
     if (!document.body || !document.body.appendChild) return;
-    if (activeHref(window.location.pathname) === '/') return;
+    if (activeHref(window.location.pathname) === CHAT) {
+      // On the chat itself there is nothing to float. Having come here (the
+      // panel's "full page" link is one way) is also the end of the panel
+      // following the operator around.
+      rememberAsk(false);
+      return;
+    }
     var a = document.createElement('a');
     a.className = 'cfop-ask';
-    a.href = '/';
+    a.href = CHAT;
     a.setAttribute('aria-label', 'Ask CFOperator');
+    a.setAttribute('aria-haspopup', 'dialog');
+    a.setAttribute('aria-controls', 'cfop-chat');
+    a.setAttribute('aria-expanded', 'false');
     a.innerHTML = svg(BRAND_MARK) + '<span class="tip" aria-hidden="true">Ask CFOperator</span>';
+    a.addEventListener('click', function (e) {
+      if (!plainClick(e)) return;
+      e.preventDefault();
+      if (ASK.panel && !ASK.panel.hidden) closeAsk(false); else openAsk('', true);
+    });
     document.body.appendChild(a);
+    ASK.btn = a;
+    // The drawers repaint by innerHTML, so their "Ask about this" links are
+    // caught here, once, rather than bound each time they are painted.
+    document.addEventListener('click', function (e) {
+      var t = e.target;
+      var link = (t && t.closest) ? t.closest('a[href^="/console?"]') : null;
+      if (!link || !plainClick(e)) return;
+      var m = HANDOFF.exec(link.getAttribute('href') || '');
+      if (!m) return;
+      e.preventDefault();
+      openAsk(m[1], true);
+    });
+    if (askWasOpen()) openAsk('', false);
   }
 
   function init() {
+    // Inside the Ask panel's frame the host page already has the rail, its
+    // status card and its timers. The frame gets CFOP.me() and nothing drawn.
+    if (EMBEDDED) return;
     var mount = document.getElementById('cfop-nav');
     if (!mount) return;
     // Paint the public sections immediately; Admin appears once identity lands.

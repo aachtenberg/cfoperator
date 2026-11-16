@@ -965,6 +965,41 @@ def _investigation_remediation_id(findings) -> Optional[int]:
     return rid if isinstance(rid, int) else None
 
 
+def _linked_remediation_statuses(session, investigations) -> Dict[int, str]:
+    """Investigation id -> status of the queue row its recommendation went to.
+
+    Linked the way the console pages already link it (CFOP-46): the newest
+    queue row whose ``investigation_id`` is this investigation, else the row
+    ``findings.remediation_id`` names. The second half is how a deduped repeat
+    is found: its row is keyed under the FIRST investigation, so only the id
+    on the repeat's own findings points at it.
+
+    The list API carries this (CFOP-709) so "is anything still waiting on a
+    human here" is one field on the row rather than a second request: the
+    rail's Inbox count runs on every page, and joining there meant fetching
+    500 payload-carrying remediation rows a minute to compute one number.
+    Two queries for the page, not one per row. An investigation with no row
+    is simply absent.
+    """
+    named = {inv.id: _investigation_remediation_id(inv.findings) for inv in investigations}
+    if not named:
+        return {}
+    out: Dict[int, str] = {}
+    rows = (session.query(RemediationQueue.investigation_id, RemediationQueue.status)
+            .filter(RemediationQueue.investigation_id.in_(list(named)))
+            .order_by(RemediationQueue.created_at.desc(), RemediationQueue.id.desc()).all())
+    for inv_id, status in rows:
+        out.setdefault(inv_id, status)  # newest first, so first seen wins
+    wanted = {rid for inv_id, rid in named.items() if rid is not None and inv_id not in out}
+    if wanted:
+        by_id = dict(session.query(RemediationQueue.id, RemediationQueue.status)
+                     .filter(RemediationQueue.id.in_(list(wanted))).all())
+        for inv_id, rid in named.items():
+            if inv_id not in out and rid in by_id:
+                out[inv_id] = by_id[rid]
+    return out
+
+
 def _investigation_remediation_pr_url(findings) -> Optional[str]:
     """URL of a PR opened during this investigation, or None.
 
@@ -3307,6 +3342,7 @@ class KnowledgeBase:
         """Get recent investigations."""
         with self.session_scope() as session:
             investigations = session.query(Investigation).order_by(Investigation.started_at.desc()).limit(limit).all()
+            remediation_status = _linked_remediation_statuses(session, investigations)
             return [
                 {
                     "id": inv.id,
@@ -3327,6 +3363,11 @@ class KnowledgeBase:
                     # say "none" only when neither exists.
                     "remediation_id": _investigation_remediation_id(inv.findings),
                     "remediation_pr_url": _investigation_remediation_pr_url(inv.findings),
+                    # What became of that row (CFOP-709): a needs_action whose
+                    # remediation is resolved, rejected or filed has had its
+                    # decision made and is not waiting on anyone. None when
+                    # there is no row.
+                    "remediation_status": remediation_status.get(inv.id),
                     # Which LLM wrote the report. The list used to drop
                     # findings entirely, so the only place the model appeared
                     # was a suffix inside the drawer — and only after opening

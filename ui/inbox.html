@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CFOperator · Inbox</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<!-- A morning summary is markdown (CFOP-708); same vendored marked as the chat page. -->
+<script src="/vendor/marked.min.js"></script>
 <!-- Tokens, the rail and the shared kit: one copy, see ui/console.css. -->
 <link rel="stylesheet" href="/console.css">
 <style>
@@ -48,12 +50,17 @@
   .filed .top .tk { margin-left:auto; font-size:12px; }
   .filed p { margin:0; line-height:1.5; color:#d4d4de; display:-webkit-box; -webkit-line-clamp:4;
     -webkit-box-orient:vertical; overflow:hidden; }
-  .sweep ul { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:10px;
+  /* The findings list, by id: a summary's own lists (the .md block below)
+     are ordinary bullets and must not pick these rows up. */
+  #sweep { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:10px;
     color:#d4d4de; line-height:1.45; }
-  .sweep li { display:flex; gap:10px; }
-  .sweep li::before { content:''; width:6px; height:6px; margin-top:8px; border-radius:50%; flex:none;
+  #sweep li { display:flex; gap:10px; }
+  #sweep li::before { content:''; width:6px; height:6px; margin-top:8px; border-radius:50%; flex:none;
     background:color-mix(in srgb, var(--tone, var(--cyan)) 80%, white); }
   .sweep .card-body { display:flex; flex-direction:column; gap:12px; }
+  /* A summary is a document, not a list of findings: it scrolls inside the
+     card, so a long one does not push the cards under it off the page. */
+  .sweep .md { max-height:420px; overflow:auto; color:#d4d4de; padding-right:6px; }
 </style>
 </head>
 <body>
@@ -85,7 +92,7 @@
     </section>
     <section class="card sweep" id="sweep-card" aria-label="Latest sweep" hidden>
       <div class="card-head"><h2>Latest sweep</h2><span class="mono muted" id="sweep-meta"></span><span class="end" id="sweep-count"></span></div>
-      <div class="card-body"><ul id="sweep"></ul><a href="/events?source=cfoperator-sweep" style="font-size:13px">View in Events</a></div>
+      <div class="card-body"><ul id="sweep"></ul><div class="md" id="sweep-doc" hidden></div><a href="/events?source=cfoperator-sweep" style="font-size:13px">View in Events</a></div>
     </section>
   </div>
 </div>
@@ -101,11 +108,13 @@
 // list, the pipeline flags and the last sweep, read the way their own pages
 // read them and cut down to the rows that want a decision.
 //
-// "Needs action" is CFOP.needsAction (nav.js): outcome needs_action and not
-// yet triaged. The rail's count is the same function over the same request,
+// "Needs action" is CFOP.needsAction (nav.js): outcome needs_action, not yet
+// triaged, and its remediation not already resolved, rejected or filed
+// (CFOP-709). The rail's count is the same function over the same request,
 // so the number beside "Inbox" is the length of this queue.
 const LIMIT=80;               // the investigations page's window; the tiles count within it
 const QUEUE_MAX=25;           // the page is a queue, not the archive — "Open all" is the archive
+const RECENT=' Counted over the '+LIMIT+' most recent investigations.';
 const OC={resolved:'--accent',needs_action:'--orange',monitoring:'--cyan',escalated:'--red',failed:'--red'};
 const SC={queued:'--cyan',claimed:'--orange',executing:'--orange','pr-open':'--purple',verifying:'--cyan',
   resolved:'--accent',failed:'--red','needs-human':'--orange',rejected:'--text-muted',
@@ -155,34 +164,40 @@ async function load(){
   document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
 
+// nav.js is the rule. Without it (the script failed to load) the page falls
+// back to the broader rule from before CFOP-709: that can list a row whose
+// remediation is already decided, and it cannot hide one that is not.
 function queue(){ return (window.CFOP&&window.CFOP.needsAction)?window.CFOP.needsAction(INV):INV.filter(r=>r.outcome==='needs_action'&&!r.triage_action); }
 function count(n, varname){ return n?badge(String(n), varname):''; }
-function kpi(label, n, tag, varname, href){
-  return `<a class="kpi" href="${href}"><span class="l">${esc(label)}</span>
+// tip: what the number counts (CFOP-707). The tiles count within the page's
+// window of recent investigations, which the tip says where it matters.
+function kpi(label, n, tag, varname, href, tip){
+  return `<a class="kpi" href="${href}"${tip?` title="${esc(tip)}"`:''}><span class="l">${esc(label)}</span>
     <span class="v"><span class="n">${n}</span>${badge(tag, n?varname:'--text-muted')}</span></a>`;
 }
 function linkedRem(r){ return REMS[r.id] || (r.remediation_id ? (REMID[r.remediation_id]||{id:r.remediation_id,status:''}) : null); }
 function remBadge(r){
   const m=linkedRem(r);
-  if(!m) return badge('no remediation','--text-muted');
-  return `<a href="/remediations#${Number(m.id)}" title="open the remediation">${badge('#'+m.id+(m.status?' '+m.status:''), SC[m.status]||'--text-muted')}</a>`;
+  if(!m) return badge('no remediation','--text-muted','No queue row came out of this investigation. Its recommendation is in the investigation itself.');
+  return `<a href="/remediations#${Number(m.id)}" title="${esc(gloss('remediation',m.status)||'open the remediation')}">${badge('#'+m.id+(m.status?' '+m.status:''), SC[m.status]||'--text-muted')}</a>`;
 }
 
 function paint(){
   const by=o=>INV.filter(r=>r.outcome===o).length, q=queue();
   document.getElementById('kpis').innerHTML=
-    kpi('Investigations needing action', q.length, 'needs action', '--orange', '/investigations')+
-    kpi('Escalated', by('escalated')+by('escalate'), 'escalated', '--red', '/investigations')+
-    kpi('Monitoring', by('monitoring'), 'watching', '--cyan', '/investigations')+
-    kpi('Failed investigation runs', by('failed'), 'failed', '--red', '/investigations')+
-    kpi('Remediations filed', FILED.length, 'in tracker', '--text-secondary', '/remediations');
+    kpi('Investigations needing action', q.length, 'needs action', '--orange', '/investigations',
+      'Investigations that ended on needs action, that nobody has triaged, and whose remediation is not already resolved, rejected or filed. The same number as beside Inbox in the rail.')+
+    kpi('Escalated', by('escalated')+by('escalate'), 'escalated', '--red', '/investigations', gloss('outcome','escalated')+RECENT)+
+    kpi('Monitoring', by('monitoring'), 'watching', '--cyan', '/investigations', gloss('outcome','monitoring')+RECENT)+
+    kpi('Failed investigation runs', by('failed'), 'failed', '--red', '/investigations', gloss('outcome','failed')+RECENT)+
+    kpi('Remediations filed', FILED.length, 'in tracker', '--text-secondary', '/remediations', gloss('remediation','filed'));
 
   const pipe=document.getElementById('pipe');
   pipe.hidden=!FLAGS;
   if(FLAGS) pipe.innerHTML='<h2>Pipeline</h2>'+Object.keys(FLAG_LABEL).map(k=>{
     const on=!!FLAGS[k];
     // The word rides along for anyone not seeing the dot.
-    return `<span class="stage${on?' on':''}${on&&k==='queue_drain'?' warn':''}"><i aria-hidden="true"></i>${FLAG_LABEL[k]}<span class="sr-only"> ${on?'on':'off'}</span></span>`;
+    return `<span class="stage${on?' on':''}${on&&k==='queue_drain'?' warn':''}"${glossAttr('flag',k)}><i aria-hidden="true"></i>${FLAG_LABEL[k]}<span class="sr-only"> ${on?'on':'off'}</span></span>`;
   }).join('')+'<a class="end" href="/remediations">Manage pipeline</a>';
 
   document.getElementById('queue-count').innerHTML=count(q.length,'--orange');
@@ -192,7 +207,7 @@ function paint(){
       <span class="id mono">#${Number(r.id)}</span>
       <div class="what"><a href="/investigations#${Number(r.id)}">${esc(String(r.trigger||'').slice(0,160))||'(no trigger recorded)'}</a>
         <span class="sub">${[r.provider?esc(r.provider):'', fmtTs(r.started_at)].filter(Boolean).join(' · ')}</span></div>
-      <div class="do">${remBadge(r)}${ADMIN?`<button type="button" class="chip" data-ack="${Number(r.id)}" aria-label="Acknowledge investigation #${Number(r.id)}">Ack</button>`:''}</div>
+      <div class="do">${remBadge(r)}${ADMIN?`<button type="button" class="chip" data-ack="${Number(r.id)}" aria-label="Acknowledge investigation #${Number(r.id)}" title="Acknowledge: you have seen this and nothing more is needed here. It leaves this queue; the agent's own outcome is kept.">Ack</button>`:''}</div>
     </div>`).join('')+
     (q.length>QUEUE_MAX?`<div class="empty"><a href="/investigations">${q.length-QUEUE_MAX} more in Investigations</a></div>`:'');
 
@@ -201,7 +216,7 @@ function paint(){
   document.getElementById('filed').innerHTML=FILED.slice(0,6).map(r=>{
     const p=r.payload||{}, href=safeUrl(r.tracker_url);
     return `<div class="filed"><div class="top"><a class="id mono" href="/remediations#${Number(r.id)}">#${Number(r.id)}</a>
-        ${r.risk?badge(r.risk+' risk', RC[r.risk]||'--text-muted'):''}${badge(r.remediation_class||'—','--text-muted')}
+        ${r.risk?badge(r.risk+' risk', RC[r.risk]||'--text-muted'):''}${badge(r.remediation_class||'—','--text-muted',gloss('class',r.remediation_class))}
         ${href?`<a class="tk mono" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(r.tracker_key||'issue')} ↗</a>`:''}</div>
       <p>${esc(p.recommendation||p.title||'')}</p></div>`;
   }).join('');
@@ -210,11 +225,21 @@ function paint(){
   card.hidden=!SWEEP;
   if(SWEEP){
     const f=SWEEP.findings||[], n=SWEEP.finding_count!=null?SWEEP.finding_count:f.length;
+    // A morning summary is stored as a sweep report whose one "finding" is
+    // the first 500 characters of a markdown document; the document itself is
+    // sweep_meta.full_text (CFOP-708). Printing the finding showed markdown
+    // source on one line, cut mid-word. When the report carries the document,
+    // the card shows the document, rendered; it is not "1 finding".
+    const doc=sweepDoc(SWEEP), list=document.getElementById('sweep'), md=document.getElementById('sweep-doc');
     document.getElementById('sweep-meta').innerHTML='#'+esc(SWEEP.id)+' · '+fmtTs(SWEEP.swept_at);
-    document.getElementById('sweep-count').innerHTML=badge(n+' finding'+(n===1?'':'s'), n?(SEV[SWEEP.severity]||'--cyan'):'--text-muted');
-    document.getElementById('sweep').innerHTML=f.length
+    document.getElementById('sweep-count').innerHTML=doc
+      ? badge('morning summary', SEV[SWEEP.severity]||'--cyan')
+      : badge(n+' finding'+(n===1?'':'s'), n?(SEV[SWEEP.severity]||'--cyan'):'--text-muted');
+    list.hidden=!!doc; md.hidden=!doc;
+    md.innerHTML=doc?renderMarkdown(doc):'';
+    list.innerHTML=doc?'':(f.length
       ? f.slice(0,5).map(x=>`<li style="--tone:var(${SEV[x.severity]||'--cyan'})">${esc(x.finding||'')}</li>`).join('')
-      : '<li class="muted">The sweep found nothing.</li>';
+      : '<li class="muted">The sweep found nothing.</li>');
   }
 }
 

@@ -30,7 +30,7 @@ CONSOLE_PAGES = ["index.html", "inbox.html", "remediations.html", "investigation
                  "events.html", "account.html", "admin.html"]
 
 # Admin is adminOnly and appears after /me; the rest always render.
-SECTIONS = ["/", "/inbox", "/remediations", "/investigations", "/events", "/account", "/admin"]
+SECTIONS = ["/console", "/inbox", "/remediations", "/investigations", "/events", "/account", "/admin"]
 
 
 def read(name):
@@ -131,7 +131,9 @@ active(process.argv[3]).then(r => console.log(JSON.stringify(r)));
 
 
 @pytest.mark.parametrize("path,expected", [
-    ("/", "/"),
+    # The chat is /console; "/" is a redirect, not a section (CFOP-710).
+    ("/console", "/console"),
+    ("/", None),
     ("/account", "/account"),
     ("/admin", "/admin"),
     ("/investigations", "/investigations"),

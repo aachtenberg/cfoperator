@@ -224,7 +224,7 @@ def test_the_remediation_drawer_links_the_row_into_the_console():
     """The whole complaint: reading the number off one page to type it on
     another. The drawer carries the id in the link; the console reads it."""
     js = inline_script("remediations.html")
-    assert "/?remediation=" in js, "remediations.html no longer links a row into the console"
+    assert "/console?remediation=" in js, "remediations.html no longer links a row into the console"
 
 
 def test_the_console_reads_a_handed_row_and_asks_about_it():
@@ -238,9 +238,9 @@ def test_the_console_reads_a_handed_row_and_asks_about_it():
     # URL intact so a reload retries rather than landing on an empty chat.
     ask = html[html.index("function askAboutRemediation("):]
     ask = ask[:ask.index("\n        }\n")]
-    assert "history.replaceState(null, '', location.pathname" in ask, (
+    assert "consumeHandoff();" in ask, (
         "the remediation param is not stripped from the URL once consumed")
-    assert ask.index("sendMessage(") < ask.index("history.replaceState("), (
+    assert ask.index("sendMessage(") < ask.index("consumeHandoff();"), (
         "the param is stripped before the question is sent")
     boot = html[html.index("const handedRemediation"):]
     boot = boot[:boot.index("} else if (savedSession)")]
@@ -254,7 +254,7 @@ def test_the_console_reads_a_handed_row_and_asks_about_it():
 
 def test_the_investigation_drawer_links_the_row_into_the_console(drawer_behaviour):
     js = inline_script("investigations.html")
-    assert "/?investigation=" in js, "investigations.html no longer links a row into the console"
+    assert "/console?investigation=" in js, "investigations.html no longer links a row into the console"
     assert drawer_behaviour["asksConsole"], "the open drawer carries no Ask console link for its row"
 
 
@@ -277,9 +277,9 @@ def test_the_console_reads_a_handed_investigation_and_asks_about_it():
     assert "askAboutInvestigation(" in html
     ask = html[html.index("function askAboutInvestigation("):]
     ask = ask[:ask.index("\n        }\n")]
-    assert "history.replaceState(null, '', location.pathname" in ask, (
+    assert "consumeHandoff();" in ask, (
         "the investigation param is not stripped from the URL once consumed")
-    assert ask.index("sendMessage(") < ask.index("history.replaceState("), (
+    assert ask.index("sendMessage(") < ask.index("consumeHandoff();"), (
         "the param is stripped before the question is sent")
     # The question carries what the drawer showed — the recommendation and the
     # steps — and asks for the checks to be run, not recited.
@@ -435,7 +435,7 @@ const tick=()=>new Promise(r=>setImmediate(r));
   // data-copy on purpose, so the div is what is inspected, not the section.)
   const report=(opened.match(/<summary>Full report[\s\S]*?<div class="md">([\s\S]*?)<\/div><\/details>/)||['',''])[1];
   out.reportRendered=/<strong>gone<\/strong>/.test(report) && !/\*\*gone\*\*/.test(report);
-  out.asksConsole=opened.indexOf('href="/?investigation=2272"')>=0;
+  out.asksConsole=opened.indexOf('href="/console?investigation=2272"')>=0;
   out.linksEvent=opened.indexOf('href="/events#am%3ANode%20Down%2F1"')>=0;
   // The maximize toggle (CFOP-113): drawn off, flips the page's state, and
   // its accessible name follows the state.
@@ -744,7 +744,7 @@ def test_the_remediation_drawer_shows_its_investigations_handoff(remediation_dra
 
 
 def test_the_remediation_drawer_links_this_row_into_the_console(remediation_drawer):
-    assert remediation_drawer["linkedConsoleHref"] == "/?remediation=80"
+    assert remediation_drawer["linkedConsoleHref"] == "/console?remediation=80"
 
 
 def test_a_remediation_with_no_investigation_shows_no_handoff(remediation_drawer):

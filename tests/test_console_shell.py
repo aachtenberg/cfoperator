@@ -138,12 +138,85 @@ def test_web_server_serves_the_stylesheet_and_the_inbox():
     assert "/console.css" not in EXEMPT_PATHS and "/inbox" not in EXEMPT_PATHS
 
 
-def test_the_chat_stays_at_the_root():
-    """/?investigation= and /?remediation= hand a row to the chat. Inbox is
-    first in the rail, but it does not take the chat's address."""
+@pytest.fixture
+def console(monkeypatch):
+    """The real WebServer routes behind the real console gate (legacy env
+    token mode, so no database is needed), as in test_console_events.py."""
+    import threading
+    from unittest.mock import MagicMock
+
+    from flask import Flask
+    from werkzeug.security import generate_password_hash
+
+    from web_auth import install_auth
+    from web_server import WebServer
+
+    operator = MagicMock()
+    operator.current_investigation = None
+    operator.config = {}
+    server = WebServer.__new__(WebServer)
+    server.operator = operator
+    server.host, server.port = "localhost", 0
+    # root_path: send_from_directory('ui', ...) resolves against the app's
+    # root, which for the real server is the repository, not tests/.
+    server.app = Flask(__name__, root_path=str(REPO_ROOT))
+    server._chat_sessions = {}
+    server._sessions_lock = threading.Lock()
+    server.auth_store = None
+    server._cockpit = None
+    server._ladder = None
+    server._setup_routes()
+    for name, value in {"CFOP_AUTH_DISABLED": "", "CFOP_SESSION_SECRET": "test-session-secret",
+                        "CFOP_UI_USERNAME": "operator",
+                        "CFOP_UI_PASSWORD_HASH": generate_password_hash("not-used-here"),
+                        "CFOP_API_TOKEN": "console-token"}.items():
+        monkeypatch.setenv(name, value)
+    install_auth(server.app, ui_dir="ui", store=None)
+    client = server.app.test_client()
+    return lambda path: client.get(path, headers={"Authorization": "Bearer console-token"})
+
+
+def test_the_console_opens_on_inbox(console):
+    """The address of the console is the address of Inbox (CFOP-710): what is
+    waiting on a person comes first, and login's default `next` is "/"."""
+    resp = console("/")
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/inbox")
+
+
+@pytest.mark.parametrize("query,target", [
+    ("investigation=2272", "/console?investigation=2272"),
+    ("remediation=80", "/console?remediation=80"),
+])
+def test_an_old_hand_off_link_still_reaches_the_chat(console, query, target):
+    """/?investigation= and /?remediation= were how a drawer handed its row to
+    the chat while the chat was "/". Those links are in old messages and
+    bookmarks; they follow the chat to /console with the row they named."""
+    resp = console("/?" + query)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(target)
+
+
+@pytest.mark.parametrize("query", [
+    "investigation=12%0d%0aSet-Cookie:x=1", "investigation=//evil.example", "remediation=abc",
+    "next=//evil.example", "investigation=",
+])
+def test_the_root_redirect_carries_nothing_it_did_not_check(console, query):
+    """Only the two keys the chat reads, digits only. Anything else lands on
+    Inbox rather than being copied into a Location header."""
+    resp = console("/?" + query)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/inbox")
+
+
+def test_the_chat_is_served_at_console(console):
+    resp = console("/console")
+    assert resp.status_code == 200
+    assert b'id="message-input"' in resp.data, "/console did not serve the chat page"
     source = (REPO_ROOT / "web_server.py").read_text(encoding="utf-8")
-    root = re.search(r"@self\.app\.route\('/'\)\s*\n\s*def \w+\(\):\s*\n\s*return (.*)", source).group(1)
-    assert "index.html" in root
+    assert "@self.app.route('/console')" in source
+    from web_auth import EXEMPT_PATHS
+    assert "/console" not in EXEMPT_PATHS
 
 
 # --- the rail, under node -------------------------------------------------
@@ -162,7 +235,12 @@ const answers={
   '/api/sweep-reports?limit=1':{reports:[{id:2394,swept_at:'2026-11-12T19:52:00Z'}]},
   '/api/investigations?limit=80':{investigations:[
     {id:1,outcome:'needs_action'},{id:2,outcome:'needs_action',triage_action:'ack'},
-    {id:3,outcome:'resolved'},{id:4,outcome:'needs_action',triage_action:null}]}
+    {id:3,outcome:'resolved'},{id:4,outcome:'needs_action',triage_action:null},
+    {id:5,outcome:'needs_action',remediation_status:'resolved'},
+    {id:6,outcome:'needs_action',remediation_status:'rejected'},
+    {id:7,outcome:'needs_action',remediation_status:'filed'},
+    {id:8,outcome:'needs_action',remediation_status:'needs-human'},
+    {id:9,outcome:'needs_action',remediation_status:null}]}
 };
 const box={console,window:{location:{pathname,href:''}},
   document:{readyState:'complete',hidden:false,head:{appendChild(){}},
@@ -188,7 +266,12 @@ const tick=()=>new Promise(r=>setImmediate(r));
   const refetched=asked.filter(u=>u==='/api/investigations?limit=80').length-before;
   answers['/api/investigations?limit=80']={investigations:[
     {id:1,outcome:'needs_action'},{id:2,outcome:'needs_action',triage_action:'ack'},
-    {id:3,outcome:'resolved'},{id:4,outcome:'needs_action',triage_action:null}]};
+    {id:3,outcome:'resolved'},{id:4,outcome:'needs_action',triage_action:null},
+    {id:5,outcome:'needs_action',remediation_status:'resolved'},
+    {id:6,outcome:'needs_action',remediation_status:'rejected'},
+    {id:7,outcome:'needs_action',remediation_status:'filed'},
+    {id:8,outcome:'needs_action',remediation_status:'needs-human'},
+    {id:9,outcome:'needs_action',remediation_status:null}]};
   console.log(JSON.stringify({
     refetched, countAfterRefresh: n.textContent,
     asks: appended.length, askHref: appended[0]?appended[0].href:null,
@@ -225,13 +308,20 @@ def test_the_rail_renders_two_groups_and_the_brand(tmp_path):
     assert r["brandLinksInbox"]
 
 
-def test_the_inbox_count_is_untriaged_needs_action(tmp_path):
+def test_the_inbox_count_is_undecided_needs_action(tmp_path):
     """The rail's number and the Inbox queue are one rule: an investigation the
-    agent ended on needs_action that nobody has triaged. A triaged one is no
-    longer waiting on anyone and must not keep the count up."""
+    agent ended on needs_action, that nobody has triaged, and whose remediation
+    nobody has decided. A triaged one is no longer waiting on anyone and must
+    not keep the count up.
+
+    Nor is one whose remediation was resolved, rejected or filed (CFOP-709):
+    that IS the decision, and asking for an Ack on top asked for it twice --
+    34 of the 39 rows in the live queue were these, and none had been acked.
+    A remediation that is still open (needs-human here) leaves the row
+    waiting, and so does having no remediation at all."""
     r = _rail(tmp_path, "/events")
-    assert r["needs"] == [1, 4]
-    assert r["count"] == "2" and r["countHidden"] is False
+    assert r["needs"] == [1, 4, 8, 9]
+    assert r["count"] == "4" and r["countHidden"] is False
 
 
 def test_a_triage_refreshes_the_rail_count(tmp_path):
@@ -262,12 +352,12 @@ def test_the_status_card_says_disconnected_when_health_fails(tmp_path):
     assert r["disconnected"] and not r["connected"]
 
 
-@pytest.mark.parametrize("pathname,asks", [("/inbox", 1), ("/events", 1), ("/admin", 1), ("/", 0)])
+@pytest.mark.parametrize("pathname,asks", [("/inbox", 1), ("/events", 1), ("/admin", 1), ("/console", 0)])
 def test_ask_is_on_every_page_but_the_chat(tmp_path, pathname, asks):
     r = _rail(tmp_path, pathname)
     assert r["asks"] == asks
     if asks:
-        assert r["askHref"] == "/" and r["askName"] == "Ask CFOperator"
+        assert r["askHref"] == "/console" and r["askName"] == "Ask CFOperator"
 
 
 # --- investigations: docked pane is not modal -----------------------------
