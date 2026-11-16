@@ -42,7 +42,6 @@
             --red-dim: #7f1d1d;
             --sidebar-width: 260px;
             --header-height: 56px;
-            --status-height: 32px;
             --radius-sm: 6px;
         }
 
@@ -77,7 +76,6 @@
             z-index: 10;
         }
         header .page-title { font-family: var(--font-ui); font-size: 18px; }
-        header .llm-switcher { margin-left: auto; }
 
         /* Embedded in the Ask panel (CFOP-711). The host page has the rail,
            a title and the agent's status; the frame keeps the conversation
@@ -85,7 +83,7 @@
            when opened: at the panel's width, beside it would leave the chat
            a third of the frame. */
         html.embed body { padding-left: 0; }
-        html.embed #cfop-nav, html.embed header .page-title, html.embed .status-bar { display: none; }
+        html.embed #cfop-nav, html.embed header .page-title { display: none; }
         html.embed header { height: 44px; padding: 0 10px; gap: 8px; }
         html.embed .main-layout { position: relative; }
         html.embed .sidebar { position: absolute; top: 0; bottom: 0; left: 0; z-index: 5;
@@ -444,70 +442,197 @@
         }
         .answer-input button:hover { opacity: 0.85; }
 
-        /* ── Chat container ── */
+        /* ── The Palette layout (CFOP-719) ──
+           cfassist's terminal convention (cfassist-go/internal/tui, CFOP-69),
+           on the web. Top to bottom: a flat transcript, the input in a
+           rounded box, the menu when one is open, one footer line. No
+           bubbles: a question is "> text", a tool call is a row, an answer is
+           text, and under each answer a dim line says what it cost. */
         #chat-container {
-            flex: 1;
-            overflow-y: auto;
-            padding: 20px;
-            scroll-behavior: smooth;
+            flex: 1; min-height: 0; overflow-y: auto;
+            padding: 18px 28px 6px;
+            display: flex; flex-direction: column; gap: 2px;
+            font-size: 13px; line-height: 1.65;
+        }
+        /* One column, capped and centred, for the transcript and everything
+           under it: a 1700px line of monospace is not readable. */
+        #chat-container > *, #thinking > *, #input-area > * {
+            width: 100%; max-width: 900px; margin-left: auto; margin-right: auto; flex: none;
         }
 
-        .message {
-            margin-bottom: 16px;
-            display: flex;
-            flex-direction: column;
-            max-width: 85%;
-            animation: msgIn 0.2s ease;
+        /* What cfassist's banner says, without the ASCII art: the rail has
+           the brand. */
+        /* Not ".banner": that is console.css's notice box, and these lines
+           came out as two amber-edged cards. */
+        .palette-banner { color: var(--text-muted); }
+        .palette-banner .brand { color: var(--accent); font-weight: 700; }
+        .palette-banner b { color: var(--text-primary); font-weight: 400; }
+        .palette-rule { height: 1px; background: var(--border); margin-top: 10px; margin-bottom: 10px; }
+
+        .message { margin-top: 12px; min-width: 0; }
+        .message.user { display: flex; gap: 8px; align-items: baseline; }
+        .message.user::before { content: '>'; flex: none; color: var(--accent); font-weight: 700; }
+        .message-bubble { min-width: 0; word-wrap: break-word; }
+        .message.user .message-bubble { white-space: pre-wrap; }
+        .message.agent.error .message-bubble { color: #f87171; }
+        /* What the turn cost, where cfassist prints it: after the answer. */
+        .turn-stats { margin-top: 6px; color: var(--text-muted); font-size: 12px; }
+
+        /* Tool rows: "-> name: args", then "<- name: result" or "!! name:
+           error". A row still opens to the full arguments and result, which
+           a terminal cannot do and the web can: that detail is the record of
+           what ran. */
+        .tool-log { margin-top: 4px; }
+        .tool-card { padding-left: 26px; color: var(--text-muted); }
+        .tool-card-header, .tool-card-result {
+            display: flex; gap: 8px; align-items: baseline; width: 100%; min-width: 0;
+            background: none; border: 0; padding: 0; color: inherit;
+            font: inherit; line-height: inherit; text-align: left;
+        }
+        .tool-card-header { cursor: pointer; }
+        .tool-card-header:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+        .tool-card .tc-status, .tool-card .tc-name { flex: none; color: #22b8d6; white-space: nowrap; }
+        .tool-card .tc-iter { flex: none; color: var(--text-muted); font-size: 11px; }
+        .tool-card .tc-summary, .tool-card .tc-outcome {
+            min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .tool-card-header:hover .tc-summary { color: var(--text-secondary); }
+        .tool-card-result .tc-arrow, .tool-card-result .tc-name { flex: none; color: #4ade80; white-space: nowrap; }
+        .tool-card-result.error .tc-arrow, .tool-card-result.error .tc-name { color: #f87171; }
+        /* A call with no result yet is the one the turn is waiting on. */
+        .tool-card:not(.done) .tc-status { animation: palette-blink 1.2s ease-in-out infinite; }
+        .tool-card-detail {
+            display: none; margin: 4px 0 6px;
+            border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--bg-primary);
+        }
+        .tool-card.expanded .tool-card-detail { display: block; }
+
+        #thinking { display: none; flex: none; padding: 2px 28px 0; font-size: 13px; }
+        #thinking.active { display: block; }
+        #thinking .thinking-text {
+            display: block; padding-left: 14px; color: var(--orange);
+            animation: palette-blink 1.2s ease-in-out infinite;
         }
 
-        @keyframes msgIn {
-            from { opacity: 0; transform: translateY(8px); }
-            to { opacity: 1; transform: translateY(0); }
+        /* The input, in its box. Green at rest. While the model works the
+           border gives way to a glowing line of marching ants in amber, the
+           colour cfassist's box turns when busy: it reads from across the
+           room, which a word in a status line does not. */
+        #input-area { flex: none; display: flex; flex-direction: column; padding: 14px 28px 12px; }
+        .palette-box {
+            position: relative; display: flex; align-items: center; gap: 8px;
+            padding: 6px 6px 6px 14px;
+            border: 1px solid #1f8f47; border-radius: 12px;
         }
-
-        .message.user {
-            align-self: flex-end;
-            align-items: flex-end;
+        .palette-box:focus-within { border-color: var(--accent); }
+        .palette-box.busy, .palette-box.busy:focus-within { border-color: transparent; }
+        /* What the session is attached to, written into the top edge. The
+           background is the page's, so the border does not run through it. */
+        .palette-box .box-title {
+            position: absolute; z-index: 1; top: -9px; left: 14px; max-width: calc(100% - 60px);
+            padding: 0 8px; background: var(--bg-primary);
+            font-size: 12px; line-height: 16px; color: var(--text-secondary);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
-
-        .message.agent, .message.tool {
-            align-self: flex-start;
-            align-items: flex-start;
+        .palette-box .prompt { flex: none; color: var(--accent); font-weight: 700; }
+        .palette-box .ants {
+            display: none; position: absolute; inset: 0; width: 100%; height: 100%;
+            overflow: visible; pointer-events: none; color: var(--orange);
+            filter: drop-shadow(0 0 3px currentColor) drop-shadow(0 0 10px currentColor);
         }
-
-        .message-header {
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 4px;
-            padding: 0 4px;
+        .palette-box.busy .ants { display: block; }
+        .palette-box .ants rect { stroke: currentColor; animation: palette-ants .9s linear infinite; }
+        /* -36 is two dash periods (10 on, 8 off), so the loop has no seam. */
+        @keyframes palette-ants { to { stroke-dashoffset: -36; } }
+        @keyframes palette-blink { 50% { opacity: .3; } }
+        /* Still, for anyone who asked for less motion: the ants stay drawn,
+           as a dashed amber border, and that is the signal. */
+        @media (prefers-reduced-motion: reduce) {
+            .palette-box .ants rect, #thinking .thinking-text, .tool-card:not(.done) .tc-status { animation: none; }
         }
-
-        .message.user .message-header { color: var(--accent); }
-        .message.agent .message-header { color: var(--cyan); }
-        .message.tool .message-header { color: var(--orange); }
-
-        .message-bubble {
-            padding: 12px 16px;
-            border-radius: var(--radius);
-            font-size: 14px;
-            line-height: 1.7;
-            white-space: pre-wrap;
-            word-wrap: break-word;
+        #message-input {
+            flex: 1; min-width: 0; min-height: 44px; padding: 11px 0;
+            border: 0; outline: 0; resize: none; background: transparent;
+            color: var(--text-primary); font-size: 14px; line-height: 22px;
         }
-
-        .message.user .message-bubble {
-            background: var(--accent-dim);
-            border: 1px solid rgba(34, 197, 94, 0.2);
-            color: var(--text-primary);
+        /* The box shows focus (its border); a second ring inside it is noise. */
+        #message-input:focus-visible { outline: 0; }
+        #message-input::placeholder { color: var(--text-muted); }
+        /* Send and stop are the icons alone: an up-arrow, a square. */
+        #send-button {
+            flex: none; width: 44px; height: 44px; display: grid; place-items: center;
+            border: 0; border-radius: 8px; background: transparent; color: var(--accent); cursor: pointer;
         }
+        #send-button:hover:not(:disabled) { background: var(--bg-tertiary); }
+        #send-button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+        #send-button:disabled { color: var(--text-dim); cursor: default; }
+        #send-button svg { width: 24px; height: 24px; }
+        #send-button .ic-stop { display: none; width: 22px; height: 22px; }
+        #send-button.stop { color: var(--orange); }
+        #send-button.stop .ic-send { display: none; }
+        #send-button.stop .ic-stop { display: block; }
 
-        .message.agent .message-bubble {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            white-space: normal;
+        /* The menu opens under the input, as cfassist's does, and takes its
+           room from the transcript. */
+        #slash-menu { display: none; margin-top: 6px; max-height: 232px; overflow-y: auto; }
+        #slash-menu.active { display: block; }
+        .slash-item {
+            display: flex; align-items: baseline; gap: 12px; min-height: 36px;
+            padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 12.5px;
         }
+        .slash-item:hover, .slash-item.selected { background: #1e2b3c; }
+        /* One column for the commands, so the descriptions line up. The
+           resets undo console.css's .cmd, which is a copyable pill. */
+        .slash-item .cmd {
+            flex: 0 0 min(48%, 420px); min-width: 0; color: var(--text-primary);
+            background: none; border: 0; border-radius: 0; padding: 0; user-select: auto; font-size: inherit;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .slash-item .desc { min-width: 0; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        /* One footer line. Left: whatever hint is true right now. Right: the
+           model, the context gauge, the last turn. It wraps when narrow. */
+        .palette-footer {
+            display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+            gap: 4px 16px; padding: 8px 6px 0; font-size: 12px; color: var(--text-muted);
+        }
+        .palette-footer .footer-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        /* The health poll's dot and label, shown only when it has failed. */
+        .palette-footer .conn { display: none; align-items: center; color: #f87171; }
+        .palette-footer .conn:has(.status-dot.disconnected) { display: inline-flex; }
+        .palette-footer .footer-status {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+            margin-left: auto; color: var(--text-secondary);
+        }
+        .palette-footer .footer-status > * + *::before { content: '\00b7'; margin-right: 8px; color: var(--text-dim); }
+        .palette-footer .ctx { display: inline-flex; align-items: center; gap: 6px; }
+        .palette-footer .ctx-bar { display: inline-block; width: 48px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+        .palette-footer .ctx-bar i { display: block; height: 4px; border-radius: 2px; background: var(--accent); }
+        /* Past 80% the next long answer may not fit. */
+        .palette-footer .ctx.high .ctx-bar i { background: var(--orange); }
+        /* The per-session model picker (CFOP-19, CFOP-417) lives here now:
+           the same chip and popover, drawn as footer text, opening upward. */
+        .palette-footer .llm-chip {
+            max-width: 46vw; min-height: 28px; padding: 2px 4px;
+            background: transparent; border: 0; color: var(--text-secondary); font-size: 12px;
+        }
+        .palette-footer .llm-chip:hover:not(:disabled) { color: var(--text-primary); }
+        .palette-footer .llm-popover { top: auto; bottom: calc(100% + 8px); left: auto; right: 0; }
+
+        header .session-stats {
+            min-width: 0; font-size: 12px; color: var(--text-muted);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        header #new-chat-btn { margin-left: auto; flex: none; }
+
+        /* In the Ask panel the same layout, at the panel's width. */
+        html.embed #chat-container { padding: 12px 14px 4px; font-size: 12.5px; }
+        html.embed #thinking { padding: 2px 14px 0; }
+        html.embed #input-area { padding: 15px 12px 10px; }
+        html.embed .tool-card { padding-left: 18px; }
+        html.embed .slash-item .cmd { flex-basis: 54%; }
+        html.embed .palette-footer { font-size: 11px; }
+        html.embed header .session-stats { display: none; }
 
         .message-bubble code {
             font-family: 'JetBrains Mono', monospace;
@@ -596,116 +721,6 @@
 
         .message-bubble strong { color: var(--text-primary); }
 
-        /* ── Tool log ── */
-        /* ── Tool activity ── */
-        .tool-log {
-            margin: 4px 0 12px 0;
-            max-width: 85%;
-        }
-
-        .tool-log-header {
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--text-muted);
-            padding: 6px 0;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            user-select: none;
-        }
-
-        .tool-log-header .tl-count {
-            background: var(--bg-tertiary);
-            color: var(--text-secondary);
-            font-size: 10px;
-            padding: 1px 6px;
-            border-radius: 8px;
-        }
-
-        .tool-log-header .tl-chevron {
-            font-size: 10px;
-            transition: transform 0.2s;
-            color: var(--text-muted);
-        }
-
-        .tool-log.collapsed .tl-chevron { transform: rotate(-90deg); }
-
-        .tool-log-body {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-
-        .tool-log.collapsed .tool-log-body { display: none; }
-
-        .tool-card {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-            transition: border-color 0.15s;
-        }
-
-        .tool-card:hover { border-color: var(--border); }
-
-        .tool-card-header {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 12px;
-            cursor: pointer;
-            user-select: none;
-            font-size: 12px;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .tool-card-header:hover { background: var(--bg-hover); }
-
-        .tool-card .tc-status {
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 9px;
-            flex-shrink: 0;
-        }
-
-        .tool-card .tc-status.pending {
-            border: 2px solid var(--cyan);
-            color: var(--cyan);
-            animation: tc-spin 1s linear infinite;
-        }
-
-        .tool-card .tc-status.success {
-            background: var(--accent-dim);
-            color: var(--accent);
-        }
-
-        .tool-card .tc-status.error {
-            background: var(--red-dim);
-            color: var(--red);
-        }
-
-        @keyframes tc-spin {
-            to { transform: rotate(360deg); }
-        }
-
-        .tool-card .tc-name {
-            color: var(--cyan);
-            font-weight: 600;
-            white-space: nowrap;
-        }
-
-        .tool-card .tc-iter {
-            color: var(--text-muted);
-            font-size: 10px;
-        }
-
         /* A provider rotation inside one chat (CFOP-112): the chip's choice
            was skipped, or a rung failed mid-loop and the next one took over. */
         .tool-fallback {
@@ -758,36 +773,6 @@
         .host-confirm .hc-outcome { color: var(--text-secondary); font-size: 12px; }
         .host-confirm.settled { border-left-color: var(--border); }
 
-        .tool-card .tc-summary {
-            color: var(--text-muted);
-            font-size: 11px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            flex: 1;
-            min-width: 0;
-        }
-
-        .tool-card .tc-chevron {
-            color: var(--text-muted);
-            font-size: 10px;
-            margin-left: auto;
-            transition: transform 0.2s;
-            flex-shrink: 0;
-        }
-
-        .tool-card.expanded .tc-chevron { transform: rotate(90deg); }
-
-        .tool-card-detail {
-            display: none;
-            border-top: 1px solid var(--border-subtle);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-            line-height: 1.5;
-        }
-
-        .tool-card.expanded .tool-card-detail { display: block; }
-
         .tc-detail-section {
             padding: 8px 12px;
         }
@@ -837,130 +822,6 @@
         .feedback-buttons button.selected { background: var(--bg-hover); color: var(--accent); border-color: var(--accent); }
         .feedback-buttons button:disabled { opacity: 0.3; cursor: default; }
 
-        /* ── Thinking indicator ── */
-        #thinking {
-            display: none;
-            padding: 0 20px 12px;
-            max-width: 85%;
-        }
-        #thinking.active { display: block; }
-
-        .thinking-bubble {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 12px 16px;
-            display: inline-flex;
-            gap: 4px;
-        }
-
-        .thinking-bubble .dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: var(--cyan);
-            animation: pulse 1.4s infinite ease-in-out;
-        }
-        .thinking-bubble .dot:nth-child(2) { animation-delay: 0.2s; }
-        .thinking-bubble .dot:nth-child(3) { animation-delay: 0.4s; }
-
-        @keyframes pulse {
-            0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
-            40% { opacity: 1; transform: scale(1); }
-        }
-
-        /* ── Input area ── */
-        #input-area {
-            background: var(--bg-secondary);
-            border-top: 1px solid var(--border);
-            padding: 14px 20px;
-            display: flex;
-            gap: 10px;
-            position: relative;
-        }
-
-        #slash-menu {
-            display: none;
-            position: absolute;
-            bottom: 100%;
-            left: 20px;
-            right: 80px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            max-height: 240px;
-            overflow-y: auto;
-            z-index: 100;
-            box-shadow: 0 -8px 32px rgba(0,0,0,0.4);
-        }
-        #slash-menu.active { display: block; }
-
-        .slash-item {
-            padding: 10px 14px;
-            cursor: pointer;
-            display: flex;
-            gap: 12px;
-            align-items: baseline;
-            transition: background 0.1s;
-        }
-        .slash-item:hover, .slash-item.selected { background: var(--bg-hover); }
-        .slash-item .cmd {
-            color: var(--accent);
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 600;
-            font-size: 13px;
-            white-space: nowrap;
-        }
-        .slash-item .desc { color: var(--text-muted); font-size: 12px; }
-
-        #message-input {
-            flex: 1;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            color: var(--text-primary);
-            padding: 10px 14px;
-            border-radius: var(--radius);
-            font-size: 14px;
-            resize: none;
-            caret-color: var(--accent);
-            outline: none;
-            transition: border-color 0.2s;
-        }
-        #message-input:focus { border-color: var(--accent); }
-        #message-input::placeholder { color: var(--text-muted); }
-
-        #send-button {
-            background: var(--accent);
-            color: var(--bg-primary);
-            border: none;
-            padding: 10px 20px;
-            border-radius: var(--radius);
-            cursor: pointer;
-            font-family: inherit;
-            font-size: 14px;
-            font-weight: 600;
-            transition: all 0.15s;
-        }
-        #send-button:hover { opacity: 0.85; }
-        #send-button:disabled { background: var(--border); color: var(--text-muted); cursor: not-allowed; }
-        #send-button.stop { background: var(--red); color: #fff; }
-        #send-button.stop:disabled { background: var(--border); color: var(--text-muted); }
-
-        /* ── Status bar ── */
-        .status-bar {
-            height: var(--status-height);
-            background: var(--bg-secondary);
-            border-top: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            padding: 0 16px;
-            gap: 16px;
-            font-size: 11px;
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--text-muted);
-            flex-shrink: 0;
-        }
-
         .status-dot {
             width: 6px;
             height: 6px;
@@ -979,8 +840,6 @@
         .toast.err { border-left-color: var(--red); }
         .answer-error { color: var(--red); font-size: 12px; margin-top: 4px; }
 
-        .status-item { display: flex; align-items: center; gap: 4px; }
-
         /* ── Scrollbar ── */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
@@ -990,40 +849,16 @@
 </head>
 <body>
     <header>
-        <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Toggle sidebar" title="Skills and chat history">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+        <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Chat history and skills" title="Chat history and skills">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
                 <line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/>
             </svg>
         </button>
         <h1 class="page-title">Console</h1>
-        <!-- The LLM this chat SESSION runs on (CFOP-19, per session since
-             CFOP-417). A change here is stored on the session row and ends
-             with the session; the defaults — the chat and handed-rows seats,
-             the global selection — are set at /admin?tab=llm (CFOP-15/122). -->
-        <div class="llm-switcher" id="llm-switcher">
-            <button type="button" class="llm-chip" id="llm-chip"
-                    aria-haspopup="dialog" aria-expanded="false" aria-controls="llm-popover"
-                    disabled title="Loading LLM…">
-                <span class="llm-chip-label" id="llm-chip-label">…</span>
-                <span class="llm-chip-badge" id="llm-chip-badge"></span>
-                <span class="llm-chip-caret" aria-hidden="true">▾</span>
-            </button>
-            <div class="llm-popover" id="llm-popover" role="dialog" aria-label="Select LLM for this session" hidden>
-                <p class="llm-scope" id="llm-scope">Applies to this chat session only.</p>
-                <div class="field">
-                    <label for="llm-backend">Backend</label>
-                    <select id="llm-backend"></select>
-                </div>
-                <div class="field">
-                    <label for="llm-model">Model</label>
-                    <select id="llm-model"></select>
-                    <input type="text" id="llm-model-custom" placeholder="model id" hidden autocomplete="off">
-                </div>
-                <p class="llm-err" id="llm-model-err"></p>
-                <button type="button" class="llm-reset" id="llm-reset" hidden title="Drop this session's own model and go back to the seat's default, which is set in Admin.">Back to default</button>
-                <a class="llm-more" href="/admin?tab=llm">Defaults and seats in Admin →</a>
-            </div>
-        </div>
+        <!-- What this session has cost so far (CFOP-719): turns, tokens in
+             and out, time. Filled by renderSessionStats(). -->
+        <span class="session-stats" id="session-stats" title="This session so far: turns, tokens sent and received, time spent answering."></span>
+        <button type="button" class="chip" id="new-chat-btn" onclick="startNewChat()" title="Start a new chat. This one stays in the history.">New chat</button>
         <!-- The rail: section nav, status, identity and logout — see ui/nav.js -->
         <div id="cfop-nav"></div>
     </header>
@@ -1057,38 +892,76 @@
             <div id="questions-panel"></div>
             <div id="sweep-panel"></div>
 
-            <div id="chat-container">
-                <div class="message agent">
-                    <div class="message-header">cfoperator</div>
-                    <div class="message-bubble">CFOperator ready. Ask me about your infrastructure, or type <code>/</code> for skills.
-                    </div>
-                </div>
-            </div>
+            <!-- Filled by showWelcome() and the turns that follow. -->
+            <div id="chat-container"></div>
 
-            <div id="thinking">
-                <div class="thinking-bubble">
-                    <div class="dot"></div><div class="dot"></div><div class="dot"></div>
-                </div>
-            </div>
+            <div id="thinking"><span class="thinking-text">thinking…</span></div>
 
+            <!-- The Palette (CFOP-719): the input in its box, the menu under
+                 it, one footer line. -->
             <div id="input-area">
+                <div class="palette-box" id="palette-box">
+                    <!-- What the session is attached to, in the box's top edge. -->
+                    <span class="box-title" id="box-title" hidden></span>
+                    <!-- The border while the model works: marching ants. -->
+                    <svg class="ants" aria-hidden="true" width="100%" height="100%"><rect x="0" y="0" width="100%" height="100%" rx="12" fill="none" stroke-width="1.5" stroke-dasharray="10 8" stroke-linecap="round"></rect></svg>
+                    <span class="prompt" aria-hidden="true">&gt;</span>
+                    <!-- No autofocus attribute: the script focuses this on the full
+                         page and leaves it alone in the Ask panel, where the host
+                         page decides (CFOP-711). A same-origin frame's autofocus
+                         takes focus from the page around it. -->
+                    <textarea id="message-input" rows="1" aria-label="Ask about your infrastructure" placeholder="Ask about your infrastructure"></textarea>
+                    <!-- Send, and Stop while a turn runs: the icons alone.
+                         setChatInFlight() swaps them and the label. -->
+                    <button id="send-button" type="button" aria-label="Send" title="Send">
+                        <svg class="ic-send" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5.5 11.5L12 5l6.5 6.5"/></svg>
+                        <svg class="ic-stop" aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2.5" fill="currentColor"/></svg>
+                    </button>
+                </div>
                 <div id="slash-menu"></div>
-                <!-- No autofocus attribute: the script focuses this on the full
-                     page and leaves it alone in the Ask panel, where the host
-                     page decides (CFOP-711). A same-origin frame's autofocus
-                     takes focus from the page around it. -->
-                <textarea id="message-input" rows="1" placeholder="Ask about your infrastructure..."></textarea>
-                <button id="send-button">Send</button>
+                <div class="palette-footer">
+                    <span class="footer-left">
+                        <!-- The health poll's verdict; drawn only when it failed. -->
+                        <span class="conn"><span class="status-dot" id="connection-status"></span><span id="connection-label">Connected</span></span>
+                        <span id="footer-hints"></span>
+                    </span>
+                    <span class="footer-status">
+                    <!-- The LLM this chat SESSION runs on (CFOP-19, per session since
+                         CFOP-417). A change here is stored on the session row and ends
+                         with the session; the defaults — the chat and handed-rows seats,
+                         the global selection — are set at /admin?tab=llm (CFOP-15/122). -->
+                    <div class="llm-switcher" id="llm-switcher">
+                        <button type="button" class="llm-chip" id="llm-chip"
+                                aria-haspopup="dialog" aria-expanded="false" aria-controls="llm-popover"
+                                disabled title="Loading LLM…">
+                            <span class="llm-chip-label" id="llm-chip-label">…</span>
+                            <span class="llm-chip-badge" id="llm-chip-badge"></span>
+                            <span class="llm-chip-caret" aria-hidden="true">▾</span>
+                        </button>
+                        <div class="llm-popover" id="llm-popover" role="dialog" aria-label="Select LLM for this session" hidden>
+                            <p class="llm-scope" id="llm-scope">Applies to this chat session only.</p>
+                            <div class="field">
+                                <label for="llm-backend">Backend</label>
+                                <select id="llm-backend"></select>
+                            </div>
+                            <div class="field">
+                                <label for="llm-model">Model</label>
+                                <select id="llm-model"></select>
+                                <input type="text" id="llm-model-custom" placeholder="model id" hidden autocomplete="off">
+                            </div>
+                            <p class="llm-err" id="llm-model-err"></p>
+                            <button type="button" class="llm-reset" id="llm-reset" hidden title="Drop this session's own model and go back to the seat's default, which is set in Admin.">Back to default</button>
+                            <a class="llm-more" href="/admin?tab=llm">Defaults and seats in Admin →</a>
+                        </div>
+                    </div>
+                        <span class="ctx" id="ctx-gauge" hidden><span id="ctx-text"></span><span class="ctx-bar" aria-hidden="true"><i id="ctx-fill"></i></span></span>
+                        <span id="turn-stats"></span>
+                    </span>
+                </div>
             </div>
         </div>
     </div>
 
-    <div class="status-bar">
-        <span class="status-item"><span class="status-dot" id="connection-status"></span><span id="connection-label">Connected</span></span>
-        <span class="status-item" id="status-uptime"></span>
-        <span class="status-item" id="status-sweep"></span>
-        <span style="margin-left:auto;" class="status-item" id="status-version"></span>
-    </div>
     <div id="toasts"></div>
 
     <script>
@@ -1115,19 +988,145 @@
             history.replaceState(null, '', location.pathname + (embedded() ? '?embed=1' : '') + location.hash);
         }
 
-        // Toggle the send button between "Send" and "Stop" depending on whether
-        // a chat is streaming. While in-flight the button is an enabled Stop button.
+        // ── The Palette (CFOP-719): what a turn cost, and the footer ──
+        // A turn's stats, from a `done` event or a stored assistant message
+        // (the same keys on both, CFOP-718). null means the turn did not
+        // report it, and nothing is drawn for it: absent is not zero.
+        function turnStats(src) {
+            const u = (src && typeof src.usage === 'object' && src.usage) || {};
+            const num = v => (typeof v === 'number' && isFinite(v) && v >= 0) ? v : null;
+            return {
+                input: num(u.input_tokens), output: num(u.output_tokens),
+                prompt: num(u.last_prompt_tokens), window: num(u.context_window),
+                seconds: num(src && src.duration_s), tools: num(src && src.tool_calls),
+            };
+        }
+        function fmtTokens(n) { return Math.round(n).toLocaleString('en-US'); }
+        // cfassist's gauge: "12.3k/32k".
+        function fmtK(n, digits) { return (n / 1000).toFixed(digits) + 'k'; }
+        // "1,840↑ 412↓ · 9.6s · 3 tools" under an answer; "1,840↑ 412↓ 9.6s
+        // 3t" in the footer, which is cfassist's own shape. '' when the turn
+        // reported nothing.
+        function statsText(s, compact) {
+            if (!s) return '';
+            const parts = [];
+            if (s.input !== null || s.output !== null) {
+                parts.push(`${fmtTokens(s.input || 0)}↑ ${fmtTokens(s.output || 0)}↓`);
+            }
+            if (s.seconds !== null) parts.push(s.seconds.toFixed(1) + 's');
+            if (s.tools) parts.push(compact ? s.tools + 't' : s.tools + (s.tools === 1 ? ' tool' : ' tools'));
+            return parts.join(compact ? ' ' : ' · ');
+        }
+
+        // The session so far, and its last finished turn. Rebuilt from the
+        // stored messages on a reload, so the header and the footer say the
+        // same after one as before it.
+        let SESSION_TOTALS = {turns: 0, input: 0, output: 0, seconds: 0};
+        let LAST_TURN = null;
+        function resetTurnStats() {
+            SESSION_TOTALS = {turns: 0, input: 0, output: 0, seconds: 0};
+            LAST_TURN = null;
+            renderSessionStats(); renderFooter();
+        }
+        function recordTurn(s) {
+            SESSION_TOTALS.turns += 1;
+            SESSION_TOTALS.input += s.input || 0;
+            SESSION_TOTALS.output += s.output || 0;
+            SESSION_TOTALS.seconds += s.seconds || 0;
+            LAST_TURN = s;
+            renderSessionStats(); renderFooter();
+        }
+        function renderSessionStats() {
+            const el = document.getElementById('session-stats');
+            if (!el) return;
+            const t = SESSION_TOTALS, parts = [];
+            if (chatSessionId) parts.push('session #' + chatSessionId);
+            if (t.turns) {
+                parts.push(t.turns + (t.turns === 1 ? ' turn' : ' turns'));
+                if (t.input || t.output) parts.push(`${fmtTokens(t.input)}↑ ${fmtTokens(t.output)}↓`);
+                if (t.seconds) parts.push(t.seconds.toFixed(1) + 's');
+            }
+            el.textContent = parts.join(' · ');
+        }
+
+        // A turn is on its way from the moment Send is pressed (SENDING),
+        // not from when the server answers with its id.
+        function chatBusy() { return !!(inFlightChatId || SENDING); }
+
+        // The footer's left half: only what is true right now. A hint that
+        // changes with state is one that gets read (cfassist, CFOP-69).
+        function footerHints() {
+            const narrow = embedded();
+            if (chatBusy()) return narrow ? 'esc stop' : 'esc stop · typing is kept';
+            const menu = document.getElementById('slash-menu');
+            if (menu && menu.classList.contains('active')) {
+                return narrow ? '↑↓ choose · tab accept · esc close'
+                              : '↑↓ choose · tab accept · enter run · esc close';
+            }
+            return narrow ? '/ skills' : '/ skills · enter send · shift+enter new line';
+        }
+        // Hints, the context gauge and the last turn. The gauge needs both
+        // numbers: what the context holds and a window somebody measured. A
+        // hosted model reports no window, so it gets no gauge, not a guess.
+        function renderFooter() {
+            const hints = document.getElementById('footer-hints');
+            if (hints) hints.textContent = footerHints();
+            const s = LAST_TURN;
+            const gauge = document.getElementById('ctx-gauge');
+            if (gauge) {
+                const known = !!(s && s.prompt && s.window);
+                gauge.hidden = !known;
+                if (known) {
+                    const pct = Math.min(100, Math.round(100 * s.prompt / s.window));
+                    document.getElementById('ctx-text').textContent = `${fmtK(s.prompt, 1)}/${fmtK(s.window, 0)}`;
+                    document.getElementById('ctx-fill').style.width = pct + '%';
+                    gauge.title = `The conversation fills ${pct}% of this model's context window.`;
+                    if (pct > 80) gauge.classList.add('high'); else gauge.classList.remove('high');
+                }
+            }
+            const turn = document.getElementById('turn-stats');
+            if (turn) {
+                const text = statsText(s, true);
+                turn.textContent = text;
+                turn.hidden = !text;
+                turn.title = text ? 'The last turn: tokens sent, tokens received, time, tool calls.' : '';
+            }
+        }
+        // What the session is attached to, in the box's top edge, the way
+        // cfassist names an attachment. '' takes it away.
+        function setBoxTitle(text) {
+            const el = document.getElementById('box-title');
+            if (!el) return;
+            const t = String(text || '').replace(/\s+/g, ' ').trim();
+            el.textContent = t;
+            el.title = t;
+            el.hidden = !t;
+        }
+
+        // Send becomes Stop while a turn is streaming, and the box shows it:
+        // the ants run from the moment the question leaves. The button is
+        // two icons, so the state goes on its class and its label, not its
+        // text.
+        function syncBusy() {
+            const busy = chatBusy();
+            const box = document.getElementById('palette-box');
+            if (box) { if (busy) box.classList.add('busy'); else box.classList.remove('busy'); }
+            renderFooter();
+        }
         function setChatInFlight(chatId) {
             inFlightChatId = chatId;
             const btn = document.getElementById('send-button');
             btn.disabled = false;
             if (chatId) {
-                btn.textContent = 'Stop';
                 btn.classList.add('stop');
+                btn.setAttribute('aria-label', 'Stop');
+                btn.title = 'Stop (Esc)';
             } else {
-                btn.textContent = 'Send';
                 btn.classList.remove('stop');
+                btn.setAttribute('aria-label', 'Send');
+                btn.title = 'Send';
             }
+            syncBusy();
         }
 
         // ── Chat session persistence (fire-and-forget, never blocks UI) ──
@@ -1145,6 +1144,7 @@
             }).then(r => r.json()).then(data => {
                 if (data.id) {
                     chatSessionId = data.id;
+                    renderSessionStats();
                     setChatLlm(data.llm || null);
                     localStorage.setItem('cfoperator_chat_session', chatSessionId);
                     loadChatSessions();
@@ -1195,6 +1195,8 @@
                 .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
                 .then(row => {
                     document.getElementById('message-input').value = remediationQuestion(row);
+                    const p = row.payload || {};
+                    setBoxTitle(`remediation #${id} \u00b7 ${p.title || p.recommendation || row.remediation_class || ''}`);
                     sendMessage({mode: 'verify'});
                     // Consumed only once the question is actually on its way: a
                     // reload must not ask twice, but a failure above leaves the
@@ -1235,6 +1237,7 @@
                 .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
                 .then(row => {
                     document.getElementById('message-input').value = investigationQuestion(row);
+                    setBoxTitle(`#${id} \u00b7 ${row.trigger || ''}`);
                     sendMessage({mode: 'verify'});
                     // Same rule as askAboutRemediation: consumed only once sent.
                     consumeHandoff();
@@ -1270,6 +1273,11 @@
                 currentToolLog = null;
                 currentToolCard = null;
                 toolCallCount = 0;
+                // The totals and the footer are rebuilt from what each
+                // stored reply says it cost (CFOP-718). What the session
+                // was attached to is not stored, so the box's edge is bare.
+                resetTurnStats();
+                setBoxTitle('');
                 for (const msg of (data.messages || [])) {
                     if (msg.role === 'tool_call') {
                         addToolCall(msg.tool || '', msg.args != null ? msg.args : msg.content);
@@ -1286,9 +1294,16 @@
                     } else {
                         currentToolLog = null; currentToolCard = null; toolCallCount = 0;
                         chatHistory.push({role: msg.role, content: msg.content});
-                        addMessage(msg.role === 'assistant' ? 'agent' : msg.role, msg.content, msg.backend, msg.model);
+                        if (msg.role === 'assistant') {
+                            const stats = turnStats(msg);
+                            addMessage('agent', msg.content, msg.backend, msg.model, stats);
+                            recordTurn(stats);
+                        } else {
+                            addMessage(msg.role, msg.content, msg.backend, msg.model);
+                        }
                     }
                 }
+                renderSessionStats();
                 highlightActiveSession();
             }).catch(() => {});
         }
@@ -1325,8 +1340,9 @@
             // answers with its seat.
             setChatLlm(null);
             if (llmPopoverOpen) setLlmPopoverOpen(false);
-            const container = document.getElementById('chat-container');
-            container.innerHTML = `<div class="message agent"><div class="message-header">cfoperator</div><div class="message-bubble">CFOperator ready. Ask me about your infrastructure, or type <code>/</code> for skills.</div></div>`;
+            showWelcome();
+            resetTurnStats();
+            setBoxTitle('');
             createChatSession();
         }
 
@@ -1344,24 +1360,57 @@
         // since CFOP-113: the investigations drawer renders the same agent prose.
         // marked is vendored; common.js escapes the text instead when it is absent.
 
-        function addMessage(role, text, backend = null, model = null) {
+        // One transcript entry, flat (CFOP-719). A question is "> text" (the
+        // glyph is the stylesheet's); an answer is its markdown, and under it
+        // a dim line with what the turn cost and which model wrote it. That
+        // line is where the model went when the per-message header did: a
+        // fallback mid-session still shows on the answer it wrote.
+        //
+        // backend 'error' is how callers mark a line that is the console's,
+        // not the model's ("Stopped.", "Error: …"); it is drawn as one and
+        // gets no stats line.
+        function addMessage(role, text, backend = null, model = null, stats = null) {
             const container = document.getElementById('chat-container');
             const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${role}`;
-
-            let header = role === 'agent' ? 'cfoperator' : role;
-            if (role === 'agent' && backend && model) {
-                header += ` &middot; ${escapeHtml(backend)}/${escapeHtml(model)}`;
+            const isError = role === 'agent' && backend === 'error';
+            messageDiv.className = `message ${role}${isError ? ' error' : ''}`;
+            messageDiv.innerHTML =
+                `<div class="message-bubble">${role === 'agent' ? renderMarkdown(text) : escapeHtml(text)}</div>`;
+            if (role === 'agent' && !isError) {
+                const parts = [statsText(stats, false)];
+                if (backend && model) parts.push(`${backend}/${model}`);
+                const line = parts.filter(Boolean).join(' · ');
+                if (line) {
+                    const statsDiv = document.createElement('div');
+                    statsDiv.className = 'turn-stats';
+                    statsDiv.textContent = line;
+                    messageDiv.appendChild(statsDiv);
+                }
             }
-
-            messageDiv.innerHTML = `
-                <div class="message-header">${header}</div>
-                <div class="message-bubble">${role === 'agent' ? renderMarkdown(text) : escapeHtml(text)}</div>
-            `;
-
             container.appendChild(messageDiv);
             container.scrollTop = container.scrollHeight;
             return messageDiv;
+        }
+
+        // What cfassist's banner says, for a fresh chat: what this is, which
+        // build, and the keys that list what it can do. One copy, so the
+        // first paint and New chat cannot drift. The two spans are filled by
+        // fillBanner(): the build from the health poll (CFOP-92), the count
+        // from the skill list.
+        let BUILD_VERSION = '';
+        function showWelcome() {
+            const container = document.getElementById('chat-container');
+            container.innerHTML =
+                `<div class="palette-banner"><span class="brand">CFOperator</span> <span id="status-version"></span></div>` +
+                `<div class="palette-banner"><span id="banner-skills"></span><b>/</b> lists skills &nbsp; <b>enter</b> sends</div>` +
+                `<div class="palette-rule"></div>`;
+            fillBanner();
+        }
+        function fillBanner() {
+            const v = document.getElementById('status-version');
+            if (v) v.textContent = BUILD_VERSION ? '· ' + BUILD_VERSION : '';
+            const s = document.getElementById('banner-skills');
+            if (s) s.textContent = SLASH_COMMANDS.length ? SLASH_COMMANDS.length + ' skills   ' : '';
         }
 
         let currentToolLog = null;
@@ -1374,7 +1423,9 @@
             const logDiv = document.createElement('div');
             logDiv.className = 'tool-log';
             toolCallCount = 0;
-            logDiv.innerHTML = `<div class="tool-log-header" onclick="this.parentElement.classList.toggle('collapsed')"><span class="tl-chevron">\u25B6</span> Tool Activity <span class="tl-count">0</span></div><div class="tool-log-body"></div>`;
+            // No "Tool Activity" header (CFOP-719): the rows are the
+            // transcript, in the order they ran, as in cfassist.
+            logDiv.innerHTML = `<div class="tool-log-body"></div>`;
             container.appendChild(logDiv);
             currentToolLog = logDiv;
             return logDiv;
@@ -1399,14 +1450,15 @@
             const card = document.createElement('div');
             card.className = 'tool-card';
             card.dataset.tool = toolName;
+            // "-> name: args" (CFOP-719). A button, so the row opens from the
+            // keyboard too; what it opens is the full arguments and result.
             card.innerHTML = `
-                <div class="tool-card-header" onclick="this.parentElement.classList.toggle('expanded')">
-                    <span class="tc-status pending">\u25CF</span>
-                    <span class="tc-name">${escapeHtml(toolName)}</span>
+                <button type="button" class="tool-card-header" title="Show the full arguments and result" onclick="this.parentElement.classList.toggle('expanded')">
+                    <span class="tc-status pending">-&gt;</span>
+                    <span class="tc-name">${escapeHtml(toolName)}:</span>
                     ${iterLabel ? `<span class="tc-iter">[${iterLabel}]</span>` : ''}
-                    <span class="tc-summary">${escapeHtml(summary.substring(0, 120))}</span>
-                    <span class="tc-chevron">\u25B6</span>
-                </div>
+                    <span class="tc-summary">${escapeHtml(summary.substring(0, 160))}</span>
+                </button>
                 <div class="tool-card-detail">
                     <div class="tc-detail-section">
                         <div class="tc-detail-label">Input</div>
@@ -1432,24 +1484,24 @@
             }
 
             if (card) {
-                // Update status indicator
-                const status = card.querySelector('.tc-status');
-                if (status) {
-                    status.className = `tc-status ${isError ? 'error' : 'success'}`;
-                    status.textContent = isError ? '\u2717' : '\u2713';
-                }
-
-                // Update summary with result preview
-                const summaryEl = card.querySelector('.tc-summary');
-                if (summaryEl) {
-                    const preview = (typeof result === 'string' ? result : JSON.stringify(result)).substring(0, 100);
-                    summaryEl.textContent = '\u2192 ' + preview;
-                    summaryEl.style.color = isError ? 'var(--red)' : 'var(--accent)';
-                    summaryEl.style.opacity = '0.7';
-                }
+                // The call's own row keeps its arguments. The result is a
+                // second row under it, "<- name: \u2026", or "!! name: \u2026" for an
+                // error, as cfassist prints them (CFOP-719). It used to
+                // overwrite the arguments in the one row.
+                card.classList.add('done');
+                const preview = (typeof result === 'string' ? result : JSON.stringify(result))
+                    .replace(/\s+/g, ' ').substring(0, 160);
+                const row = document.createElement('div');
+                row.className = 'tool-card-result' + (isError ? ' error' : '');
+                row.innerHTML =
+                    `<span class="tc-arrow">${isError ? '!!' : '&lt;-'}</span>` +
+                    `<span class="tc-name">${escapeHtml(toolName || card.dataset.tool || '')}:</span>` +
+                    `<span class="tc-outcome">${escapeHtml(preview)}</span>`;
 
                 // Add result section to detail
                 const detail = card.querySelector('.tool-card-detail');
+                if (detail && detail.parentElement === card) card.insertBefore(row, detail);
+                else card.appendChild(row);
                 if (detail) {
                     const section = document.createElement('div');
                     section.className = 'tc-detail-section';
@@ -1537,6 +1589,7 @@
             const message = input.value.trim();
             if (!message) return;
             SENDING = true;
+            syncBusy();   // the ants start with the question, not with the server's reply
 
             addMessage('user', message);
             chatHistory.push({role: 'user', content: message});
@@ -1688,7 +1741,11 @@
                 setChatInFlight(null);
                 currentToolLog = null; currentToolCard = null; toolCallCount = 0;
                 if (data.response) {
-                    const msgEl = addMessage('agent', data.response, data.backend, data.model);
+                    // What the turn cost rides on the event (CFOP-718): under
+                    // the answer, in the footer, and into the session totals.
+                    const stats = turnStats(data);
+                    const msgEl = addMessage('agent', data.response, data.backend, data.model, stats);
+                    recordTurn(stats);
                     chatHistory.push({role: 'assistant', content: data.response});
                     // The assistant row is written by the /api/chat worker
                     // (CFOP-125). Saving it here as well double-writes the turn.
@@ -1849,15 +1906,16 @@
                 return r.json();
             }).then(data => {
                 setConnected(true);
-                const uptime = data.uptime_seconds || 0;
-                const h = Math.floor(uptime / 3600);
-                const m = Math.floor((uptime % 3600) / 60);
-                document.getElementById('status-uptime').textContent = `Uptime: ${h}h ${m}m`;
                 // The build version comes from the image (CFOP-92): "1.1.0" for a release, "main-<sha>" or "dev" otherwise.
-                if (data.version) document.getElementById('status-version').textContent = /^\d/.test(data.version) ? 'v' + data.version : data.version;
+                // It is the banner's now (fillBanner writes #status-version): the status bar it used to sit in
+                // repeated the rail's status card, and went with CFOP-719. Uptime and last sweep are on that card.
+                if (data.version) {
+                    BUILD_VERSION = /^\d/.test(data.version) ? 'v' + data.version : data.version;
+                    fillBanner();
+                }
                 // A console opened while the agent was restarting got an empty
                 // skill list; the health poll is the first thing to see it back.
-                if (!SLASH_COMMANDS.length) loadSlashCommands();
+                if (!SLASH_COMMANDS.length) loadSlashCommands().then(fillBanner);
             }).catch(() => setConnected(false));
         }
         updateStatus();
@@ -1897,7 +1955,8 @@
             }
             renderSkillList();
         }
-        loadSlashCommands();
+        // The banner's skill count follows the list, here and when the health poll refetches it.
+        loadSlashCommands().then(fillBanner);
 
         let slashMenuIndex = -1;
 
@@ -1928,6 +1987,7 @@
             document.getElementById('message-input').focus();
             document.getElementById('slash-menu').classList.remove('active');
             slashMenuIndex = -1;
+            renderFooter();
         }
 
         function handleSlashKeydown(e) {
@@ -1946,7 +2006,7 @@
                 else if (filtered.length === 1) applySlashCommand(filtered[0]);
                 return true;
             }
-            if (e.key === 'Escape') { menu.classList.remove('active'); slashMenuIndex = -1; return true; }
+            if (e.key === 'Escape') { menu.classList.remove('active'); slashMenuIndex = -1; renderFooter(); return true; }
             return false;
         }
 
@@ -1957,6 +2017,8 @@
 
         document.getElementById('message-input').addEventListener('keydown', (e) => {
             if (handleSlashKeydown(e)) return;
+            // The footer's hint while a turn runs: esc stops it. The menu's own Escape came first.
+            if (e.key === 'Escape' && inFlightChatId) { e.preventDefault(); stopChat(); return; }
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         });
 
@@ -1964,6 +2026,7 @@
             e.target.rows = 1;
             e.target.rows = Math.min(Math.ceil(e.target.scrollHeight / 22), 6);
             updateSlashMenu();
+            renderFooter();   // the hints follow the menu
             saveDraft(e.target.value);
         });
 
@@ -1986,14 +2049,17 @@
         }
 
         document.getElementById('message-input').addEventListener('blur', () => {
-            setTimeout(() => document.getElementById('slash-menu').classList.remove('active'), 150);
+            setTimeout(() => { document.getElementById('slash-menu').classList.remove('active'); renderFooter(); }, 150);
         });
 
         document.addEventListener('keydown', (e) => {
             const input = document.getElementById('message-input');
             if (document.activeElement === input) return;
             if (['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) return;
-            if (e.key === '/') { e.preventDefault(); input.value = '/'; input.focus(); updateSlashMenu(); }
+            // Anywhere on the page, not only in the composer. An open model
+            // picker has Escape first: it closes itself.
+            if (e.key === 'Escape' && inFlightChatId && !llmPopoverOpen) { stopChat(); return; }
+            if (e.key === '/') { e.preventDefault(); input.value = '/'; input.focus(); updateSlashMenu(); renderFooter(); }
         });
 
         // Sweep Reports. The latest report is kept on the page so a finding's
@@ -2051,7 +2117,6 @@
                 // The poll repaints every 60 s; the click now lives inside the
                 // open body, so an open panel stays open across the repaint.
                 const wasOpen = !!panel.querySelector('.sweep-body.open');
-                document.getElementById('status-sweep').textContent = `Last sweep: ${ago}`;
                 // A morning summary is one markdown document, stored with its
                 // first 500 characters as the report's only "finding"
                 // (CFOP-708, sweepDoc in common.js). The row keeps its Ask
@@ -2381,6 +2446,8 @@
         // to give it. Not in the Ask panel: there the host page focuses the
         // chat when the operator opens it, and must keep its own focus when
         // the panel merely followed them to another page.
+        showWelcome();
+        renderFooter();
         if (!embedded()) {
             const composer = document.getElementById('message-input');
             if (composer && composer.focus) composer.focus();

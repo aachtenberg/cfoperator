@@ -134,7 +134,10 @@ box.pollChatEvents('c0ffee', 0);
     // evaluating the name rather than off `box`.
     out.inFlight = vm.runInContext('inFlightChatId', box);
     out.sendDisabled = send.disabled;
-    out.sendLabel = send.textContent;
+    // The button is two icons (CFOP-719); which one shows is its 'stop'
+    // class, set with the label by setChatInFlight.
+    out.sendLabel = send.classList.contains('stop') ? 'Stop' : 'Send';
+    out.boxBusy = doc.getElementById('palette-box').classList.contains('busy');
     out.newMessages = container.children.length - before;
     out.lastMessage = container.children.slice(-1).map(m=>m.innerHTML)[0] || '';
     console.log(JSON.stringify(out));
@@ -241,6 +244,7 @@ def test_the_composer_is_returned_when_the_turn_is_lost(case, request):
         f"the button still says {data['sendLabel']!r} — it is a Stop for a chat "
         "that is not running")
     assert not data["thinkingActive"], "the thinking indicator is still up"
+    assert data["boxBusy"] is False, "the input box still shows a turn running"
 
 
 @pytest.mark.parametrize("case", ["gone", "malformed", "unreachable", "nullbody"])
