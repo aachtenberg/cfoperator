@@ -1068,13 +1068,17 @@
             // the server's answer the box is already busy, but there is no
             // chat id yet and Escape has nothing to act on; the hint said it
             // did (agent review on #376).
-            if (inFlightChatId) return narrow ? 'esc stop' : 'esc stop · typing is kept';
-            if (SENDING) return narrow ? 'sending…' : 'sending… · typing is kept';
+            // The menu first, the order the key handler uses: the composer
+            // stays editable during a turn, so "/" can open the menu while
+            // one runs, and Escape then closes the menu, not the turn. The
+            // footer said "esc stop" through that (Bugbot on #376).
             const menu = document.getElementById('slash-menu');
             if (menu && menu.classList.contains('active')) {
                 return narrow ? '↑↓ choose · tab accept · esc close'
                               : '↑↓ choose · tab accept · enter run · esc close';
             }
+            if (inFlightChatId) return narrow ? 'esc stop' : 'esc stop · typing is kept';
+            if (SENDING) return narrow ? 'sending…' : 'sending… · typing is kept';
             return narrow ? '/ skills' : '/ skills · enter send · shift+enter new line';
         }
         // Hints, the context gauge and the last turn. The gauge needs both
@@ -1309,7 +1313,7 @@
                         if (msg.role === 'assistant') {
                             const stats = turnStats(msg);
                             addMessage('agent', msg.content, msg.backend, msg.model, stats);
-                            recordTurn(stats);
+                            if (!turnFailed(msg.backend)) recordTurn(stats);
                         } else {
                             addMessage(msg.role, msg.content, msg.backend, msg.model);
                         }
@@ -1380,17 +1384,19 @@
         //
         // backend 'error' is how callers mark a line that is the console's,
         // not the model's ("Stopped.", "Error: …"); it is drawn as one and
-        // gets no stats line.
+        // gets no stats line. So is 'none', the agent's word for a turn
+        // nothing answered (the circuit is open, no provider is available):
+        // that is a failed turn, not an answer that took 0.2s.
         function addMessage(role, text, backend = null, model = null, stats = null) {
             const container = document.getElementById('chat-container');
             const messageDiv = document.createElement('div');
-            const isError = role === 'agent' && backend === 'error';
+            const isError = role === 'agent' && turnFailed(backend);
             messageDiv.className = `message ${role}${isError ? ' error' : ''}`;
             messageDiv.innerHTML =
                 `<div class="message-bubble">${role === 'agent' ? renderMarkdown(text) : escapeHtml(text)}</div>`;
             if (role === 'agent' && !isError) {
                 const parts = [statsText(stats, false)];
-                if (backend && model) parts.push(`${backend}/${model}`);
+                if (namesAModel(backend, model)) parts.push(`${backend}/${model}`);
                 const line = parts.filter(Boolean).join(' · ');
                 if (line) {
                     const statsDiv = document.createElement('div');
@@ -1403,6 +1409,17 @@
             container.scrollTop = container.scrollHeight;
             return messageDiv;
         }
+
+        // What the agent puts in backend/model when no model is behind a
+        // result. 'none': nothing answered. 'N/A': the turn is real but no
+        // model wrote it (the summary phrase, an unknown skill). Neither is a
+        // seat to print: "0.2s · none/none" under a refusal read as an answer
+        // from a model called none (Bugbot on #376).
+        const NOT_A_MODEL = {none: true, 'N/A': true, error: true};
+        function namesAModel(backend, model) {
+            return !!(backend && model && !NOT_A_MODEL[backend] && !NOT_A_MODEL[model]);
+        }
+        function turnFailed(backend) { return backend === 'error' || backend === 'none'; }
 
         // What cfassist's banner says, for a fresh chat: what this is, which
         // build, and the keys that list what it can do. One copy, so the
@@ -1601,13 +1618,18 @@
             const message = input.value.trim();
             if (!message) return;
             SENDING = true;
-            syncBusy();   // the ants start with the question, not with the server's reply
 
             addMessage('user', message);
             chatHistory.push({role: 'user', content: message});
             input.value = '';
             input.rows = 1;
+            // Emptied by script, so no input event: close the menu a sent
+            // "/command" left open, or it and its hints outlive the text.
+            updateSlashMenu();
             saveDraft('');
+            // The ants start with the question, not with the server's reply.
+            // After the menu is closed, so the footer's hint is the turn's.
+            syncBusy();
 
             document.getElementById('send-button').disabled = true;
             document.getElementById('thinking').classList.add('active');
@@ -1757,7 +1779,8 @@
                     // the answer, in the footer, and into the session totals.
                     const stats = turnStats(data);
                     const msgEl = addMessage('agent', data.response, data.backend, data.model, stats);
-                    recordTurn(stats);
+                    // A turn nothing answered is not counted as one.
+                    if (!turnFailed(data.backend)) recordTurn(stats);
                     chatHistory.push({role: 'assistant', content: data.response});
                     // The assistant row is written by the /api/chat worker
                     // (CFOP-125). Saving it here as well double-writes the turn.

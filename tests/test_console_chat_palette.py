@@ -168,9 +168,24 @@ const tick=()=>new Promise(r=>setImmediate(r));
 
   // A turn that reported nothing draws nothing: absent is not zero.
   box.setChatInFlight('dead');
-  box.handleChatEvent({event:'done', data:{response:'No numbers.', backend:'N/A', model:'N/A'}});
+  box.handleChatEvent({event:'done', data:{response:'No numbers.', backend:'ollama', model:'gemma4:26b'}});
   const bare=g('chat-container').children[g('chat-container').children.length-1];
   out.bareStats=stats(bare); out.bareTurnHidden=g('turn-stats').hidden; out.bareGaugeHidden=g('ctx-gauge').hidden;
+
+  // Results no model wrote. 'N/A' is a real turn without a model (the
+  // summary phrase): its time shows, no seat. 'none' is a turn nothing
+  // answered: a failed turn, with no cost line, and not counted.
+  const turnsBefore=text('session-stats');
+  box.setChatInFlight('5555');
+  box.handleChatEvent({event:'done', data:{response:'# Morning summary', backend:'N/A', model:'N/A', tool_calls:0, duration_s:12}});
+  const summary=g('chat-container').children[g('chat-container').children.length-1];
+  out.naClass=summary.className; out.naStats=stats(summary);
+  const turnsWithSummary=text('session-stats');
+  box.setChatInFlight('6666');
+  box.handleChatEvent({event:'done', data:{response:'No LLM providers available', backend:'none', model:'none', tool_calls:0, duration_s:0.2}});
+  const refused=g('chat-container').children[g('chat-container').children.length-1];
+  out.noneClass=refused.className; out.noneStats=stats(refused);
+  out.summaryCounted=turnsWithSummary!==turnsBefore; out.noneCounted=text('session-stats')!==turnsWithSummary;
 
   // The console's own lines are not answers.
   box.setChatInFlight('aaaa');
@@ -204,6 +219,21 @@ const tick=()=>new Promise(r=>setImmediate(r));
   out.sendingEscStops=stops.length-stopsBefore;
   for(let i=0;i<8;i++) await tick();
   out.afterSendingHints=text('footer-hints'); out.afterSendingBox=g('palette-box').classList.contains('busy');
+
+  // The menu opened while a turn runs: the hints are the menu's, and Escape
+  // closes the menu first. A second Escape stops the turn.
+  box.setChatInFlight('7777');
+  g('message-input').value='/inv';
+  g('message-input').on.input({target:g('message-input')});
+  out.flightMenuHints=text('footer-hints');
+  const stops0=stops.length;
+  g('message-input').on.keydown({key:'Escape', preventDefault(){}});
+  out.flightMenuClosed=!g('slash-menu').classList.contains('active');
+  out.flightStopsAfterFirstEsc=stops.length-stops0;
+  out.flightHintsAfterFirstEsc=text('footer-hints');
+  g('message-input').on.keydown({key:'Escape', preventDefault(){}});
+  out.flightStopsAfterSecondEsc=stops.length-stops0;
+  g('message-input').value='';
 
   // A reload rebuilds the totals and the footer from what was stored.
   box.loadChatSession(7);
@@ -321,9 +351,33 @@ def test_a_model_with_no_known_window_gets_no_gauge(page):
 
 
 def test_a_turn_that_reported_nothing_draws_nothing(page):
-    """Absent is not zero: "0↑ 0↓" would be a claim."""
-    assert page["bareStats"] == "N/A/N/A"
+    """Absent is not zero: "0↑ 0↓" would be a claim. The model that wrote the
+    answer is still named."""
+    assert page["bareStats"] == "ollama/gemma4:26b"
     assert page["bareTurnHidden"] is True and page["bareGaugeHidden"] is True
+
+
+def test_a_result_no_model_wrote_names_no_model(page):
+    """Bugbot on #376. The agent answers 'N/A'/'N/A' for a turn no model wrote
+    (the summary phrase, an unknown skill) and 'none'/'none' when nothing
+    could answer (circuit open, no providers), and every result carries a
+    duration. Printed as a seat those read "12.0s · N/A/N/A" and
+    "0.2s · none/none", an answer from a model called none. An earlier
+    version of the test above expected exactly that."""
+    assert page["naClass"] == "message agent" and page["naStats"] == "12.0s"
+    assert page["noneClass"] == "message agent error", "a turn nothing answered is drawn as an answer"
+    assert page["noneStats"] is None
+    assert page["summaryCounted"] is True and page["noneCounted"] is False
+
+
+def test_the_menu_s_hints_win_while_a_turn_runs(page):
+    """Bugbot on #376. The composer stays editable during a turn, so "/" can
+    open the menu while one runs. Escape then closes the menu and never
+    reaches the stop; the footer said "esc stop" through it."""
+    assert page["flightMenuHints"] == "↑↓ choose · tab accept · enter run · esc close"
+    assert page["flightMenuClosed"] and page["flightStopsAfterFirstEsc"] == 0
+    assert page["flightHintsAfterFirstEsc"] == "esc stop · typing is kept"
+    assert page["flightStopsAfterSecondEsc"] == 1
 
 
 def test_one_side_of_the_count_is_not_padded_with_a_zero(page):
