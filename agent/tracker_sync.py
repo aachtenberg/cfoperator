@@ -234,7 +234,12 @@ def _reconcile_filed_row(op, row: Dict[str, Any], base: str, tr: Dict[str, Any],
         logger.info(f"Remediation #{rid} rejected: {key} cancelled in the tracker")
         return True
     # Still open: stamp the poll so the next tick looks at another row first.
-    tr.update(checked_at=now, error=None)
+    # The count goes with the error. This is the branch a filed row takes on
+    # nearly every tick, so a count left standing here is never reset while
+    # the row lives: "(N×)" becomes every failure since filing, and the
+    # backoff in list_remediations_for_tracker doubles per unrelated blip
+    # until one reset costs an hour of polling (CFOP-723).
+    tr.update(checked_at=now, error=None, error_count=0)
     op.kb.merge_remediation_result(rid, {'tracker': tr})
     return False
 
