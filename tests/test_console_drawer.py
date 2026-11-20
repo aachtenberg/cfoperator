@@ -857,8 +857,9 @@ def test_a_row_with_no_pr_is_unchanged(pr_drawer):
 
 def test_an_unverified_observed_check_is_on_the_row(pr_drawer):
     """CFOP-89. A claim that was not read against a file must not look like
-    one that was. Mutation check: drop the observed_check line in
-    remediations.html and this fails."""
+    one that was. Mutation check: drop the observed_check line from fixHtml()
+    in common.js (both drawers draw the fix with it since CFOP-414) and this
+    fails."""
     d = pr_drawer["drawer87"]
     assert "observed check" in d
     assert "unverified" in d

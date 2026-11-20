@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CFOperator · Remediations</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<!-- The row's report is markdown (CFOP-414); same vendored marked as the investigations pane. -->
+<script src="/vendor/marked.min.js"></script>
 <!-- Tokens, the rail and the shared kit: one copy, see ui/console.css. -->
 <link rel="stylesheet" href="/console.css">
 <style>
@@ -37,18 +39,31 @@
   .stage .n.zero { color:var(--text-dim); }
   .stage .l { font-size:12px; color:var(--text-secondary); }
   .cls { display:flex; flex-direction:column; gap:4px; align-items:flex-start; font-size:12px; }
-  .rec .t { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-  .rec { max-width:560px; }
+  td.rec .t { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  td.rec { max-width:560px; }
   .host { max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
   /* A bucket divider is a full-width row in the one table (CFOP-419), not a
      heading between tables: three tables laid out three sets of columns. */
   tr.divider td { padding:20px 16px 8px; border-top:1px solid var(--border-subtle); border-bottom-color:var(--border-subtle);
     font-size:12px; font-weight:600; color:var(--text-secondary); }
-  #detail { width:min(560px,92vw); }
-  .kv { margin:4px 0; }
-  .actform { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:var(--radius-xs);
-    padding:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0 12px; }
-  .actform label { color:var(--text-secondary); font-size:12px; }
+  /* The drawer is the pane Investigations has (CFOP-414): the kit is
+     console.css's. It stays a drawer over the list at every width, because
+     this list is a table that needs the room; wide enough for two cards. */
+  #detail { width:min(900px,96vw); padding:20px 24px 96px; }
+  /* What a button opens before it sends: a note, or the reclassify pickers. */
+  .p-form .col { flex:1 0 100%; display:flex; flex-direction:column; gap:10px; }
+  .p-form .line { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+  .p-form .lbl { min-width:44px; font-size:12px; color:var(--text-secondary); }
+  .p-form input[type="number"] { flex:0 0 88px; }
+  /* The picked class and risk. The rule went missing when the styles moved to
+     console.css (CFOP-696), which left the picker showing no selection. */
+  .p-form .pick[aria-pressed="true"] { border-color:var(--accent); color:var(--text-primary);
+    background:color-mix(in srgb, var(--accent) 14%, var(--bg-tertiary)); }
+  /* A long error folds to its first line; the rest is one click away. */
+  details.more > summary { font-weight:400 !important; font-size:12.5px; line-height:1.45; overflow-wrap:anywhere; }
+  details.more[open] > summary .cut { display:none; }
+  .cmds li { margin:0 0 4px; overflow-wrap:anywhere; }
+  .cmds { margin:0; padding-left:18px; }
 </style>
 </head>
 <body>
@@ -299,6 +314,11 @@ trapFocus(document.getElementById('detail'));
 // The attach line's copy icon (CFOP-113) — one delegated listener, see common.js.
 bindCopyIcons(document);
 
+// The drawer is a pane (CFOP-414): the same head, meta line, action bar and
+// cards the investigations pane has, from the one kit in console.css. The
+// order is what an operator acts on: what the row is, what can be done to it,
+// the recommendation, who decided and where it is being handled. The report,
+// the diff and the raw payload are complete but folded.
 async function detail(id){
   const d = document.getElementById('detail');
   d.innerHTML = '<span class="muted">loading…</span>';
@@ -315,71 +335,110 @@ async function detail(id){
   // stale response is dropped.
   if(OPEN!==id) return;
   const p = r.payload||{};
-  d.innerHTML = `
-    <button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button>
-    <h2 id="detail-title" style="margin:0 0 8px">Remediation #${r.id}</h2>
-    <div style="margin:0 0 8px;display:flex;gap:8px;flex-wrap:wrap">
-      ${r.remediation_class==='manual'
-        ? `<button class="chip" onclick="showReclassify(${r.id})">Reclassify first</button>`
-        : safeUrl(r.pr_url)
-        ? `<a class="chip" href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">Review PR ↗</a>`
-        : awaitingRecordMerge(r)
-        ? changeRecordChip(r)
-        : `<button class="chip" onclick="approve(${r.id})" title="Sends this row to the queue. The drain stage claims it and starts an executor; a host fix still waits for its change record to be merged.">Approve → queue</button>`}
-      ${!awaitingRecordMerge(r)?changeRecordChip(r):''}
-      ${!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)?`<a class="chip" href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer" title="A pull request the recommendation names. This row does not track it.">Named PR ↗</a>`:''}
-      ${trackerChip(r)}
-      <button class="chip" onclick="showResolve(${r.id})" title="Close this row as done, with a note saying what closed it. For a fix that happened some other way.">Resolve</button>
-      <button class="chip" onclick="showReject(${r.id})" title="Close this row as not to be done, with an optional reason.">Reject</button>
-      ${r.remediation_class==='manual'?'':`<button class="chip" onclick="showReclassify(${r.id})" title="Change the class, risk, target repository or confidence. The row then goes back through the gate that decides whether it may run on its own.">Reclassify</button>`}
-      ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})" title="Show the findings of the investigation this row came from, at the bottom of this drawer.">Investigation #${r.investigation_id}</button>`:''}
-      <a class="chip" href="/console?remediation=${Number(r.id)}" title="open the console chat on this row">Ask about this</a>
+  const title = 'Remediation #'+r.id;
+  const rec = String(p.recommendation||p.title||'').trim();
+  // Who decided what about this row, and where it is being handled. Built
+  // first so a card with nothing in it is not drawn.
+  const decision = `${decidedByHtml(p.decided_by)}${dedupeHtml(p.dedupe)}${reverifyHtml(r)}${absorbedHtml(p.absorbed)}`;
+  const tracking = `${investigationRow(r)}${attachBlock(r)}${prRowsHtml(r)}${prAttemptHtml(p.pr_attempt)}${trackerHtml(r)}${r.last_error?lastErrorHtml(r):''}${resolutionHtml(r)}`;
+  d.innerHTML = `<div class="pane">
+    <div class="p-head">
+      <h2 id="detail-title">${esc(title)}${copyIcon('remediation title',{text:title+(rec?' — '+rec:'')})}</h2>
+      ${badge(r.status,SC[r.status]||'--text-muted',gloss('remediation',r.status))}
+      ${r.risk?badge(r.risk+' risk',RC[r.risk]||'--text-muted'):''}
+      <span class="end"><button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button></span>
     </div>
-    ${r.remediation_class==='manual'?`<div class="muted" style="margin:0 0 8px">manual = human-only work: the executor has nothing to run. Reclassify it (gitops-patch / k8s-action / node-action) for the executor, or do it by hand and Resolve.</div>`:''}
-    ${r.status===FILED?`<div class="muted" style="margin:0 0 8px">${trackerCopy(r)}</div>`:''}
-    ${r.remediation_class!=='manual'&&safeUrl(r.pr_url)&&!TERMINAL.has(r.status)?`<div class="muted" style="margin:0 0 8px">a PR is open for this row: merge it and the reconciler resolves the row; close it and the row is rejected. Approve is off — the executor would open a second PR.</div>`:''}
-    ${r.remediation_class!=='manual'&&!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)&&!TERMINAL.has(r.status)?`<div class="muted" style="margin:0 0 8px">the recommendation names a PR in this repo that no row tracks. If that PR is the fix, merge it and Resolve; Approve would have the executor open another.</div>`:''}
-    <div id="actionform"></div>
-    <div class="kv">${badge(r.status,SC[r.status]||'--text-muted',gloss('remediation',r.status))} ${badge(r.risk,RC[r.risk]||'--text-muted')}
-      <span class="muted"><span${glossAttr('class',r.remediation_class)}>${esc(r.remediation_class)}</span> · <span title="The model's confidence in this fix, from 0 to 1. A row runs without approval only when its class is allowed to, its risk is low and this clears the configured minimum (0.8 unless changed).">conf ${r.confidence==null?'—':r.confidence}</span></span></div>
-    <div class="kv"><b>host</b> ${esc(r.host_id)}</div>
-    <div class="kv"><b title="The model that wrote this recommendation.">reporting LLM</b> ${p.provider?`<span class="mono">${esc(p.provider)}</span>`:'—'}</div>
-    ${decidedByHtml(p.decided_by)}
-    ${absorbedHtml(p.absorbed)}
-    <div class="kv"><b>source investigation</b> ${r.investigation_id?('#'+r.investigation_id):'—'}</div>
-    ${attachBlock(r)}
-    <div class="kv"><b>created</b> ${fmtTs(r.created_at,{seconds:true})} · <b title="How many times an executor has been started on this row. At the attempt cap it is parked as needs-human.">attempts</b> ${r.attempts}</div>
-    ${safeUrl(r.pr_url)?`<div class="kv"><b>PR</b> <a href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.pr_url)}</a></div>`
-      :safeUrl(r.named_pr_url)?`<div class="kv"><b>PR named</b> <a href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.named_pr_url)}</a> <span class="muted">not tracked by this row</span></div>`:''}
-    ${prAttemptHtml(p.pr_attempt)}
-    ${trackerHtml(r)}
-    ${r.last_error?`<div class="kv"><b>last error</b> ${esc(r.last_error)}</div>`:''}
+    <div class="p-meta">
+      <span><b>class</b> <span class="mono v"${glossAttr('class',r.remediation_class)}>${esc(r.remediation_class)}</span></span>
+      <span title="The model's confidence in this fix, from 0 to 1. A row runs without approval only when its class is allowed to, its risk is low and this clears the configured minimum (0.8 unless changed)."><b>conf</b> <span class="v">${r.confidence==null?'—':esc(r.confidence)}</span></span>
+      ${r.host_id?`<span><b>host</b> <span class="mono v">${esc(r.host_id)}</span></span>`:''}
+      ${p.provider?`<span title="The model that wrote this recommendation."><b>reported by</b> <span class="mono v">${esc(p.provider)}</span></span>`:''}
+      <span><b>created</b> <span class="v">${fmtTs(r.created_at,{seconds:true})}</span></span>
+      <span title="How many times an executor has been started on this row. At the attempt cap it is parked as needs-human."><span class="v">${Number(r.attempts)||0}</span> attempts</span>
+    </div>
+    ${actionBar(r)}
+    <section class="pcard" aria-label="Recommendation"><div class="hd"><h3>Recommendation${rec?copyIcon('recommendation',{from:'rec-text'}):''}</h3></div><div class="bd">
+      ${rec?`<p class="rec" id="rec-text">${esc(rec)}</p>`:`<p class="muted">This row carries no recommendation.</p>`}
+      ${fixHtml(p,{risk:false})}</div></section>
+    ${decision||tracking?`<div class="pgrid">
+      ${decision?`<section class="pcard" aria-label="Decision"><div class="hd"><h3>Decision</h3></div><div class="bd">${decision}</div></section>`:''}
+      ${tracking?`<section class="pcard" aria-label="Tracking"><div class="hd"><h3>Tracking</h3></div><div class="bd">${tracking}</div></section>`:''}
+    </div>`:''}
     ${changeRecordHtml(r)}
     ${blockedCommandsHtml(r)}
-    ${resolutionHtml(r)}
-    <h3>Recommendation</h3><pre>${esc(p.recommendation||p.title||'—')}</pre>
-    ${p.targets?`<h3>Targets</h3><pre>${esc(JSON.stringify(p.targets,null,2))}</pre>`:''}
-    ${p.observed_check&&p.observed_check.status?`<div class="kv"><b title="Whether what the model said it observed was checked against the file it named. Unverified means it could not be checked, not that it is wrong.">observed check</b> ${esc(p.observed_check.status)} <span class="muted">${esc(p.observed_check.reason||'')}</span></div>`:''}
-    ${p.observed&&p.observed.length?`<h3>Observed</h3><pre>${esc(p.observed.map(o=>(o.source||'')+'\n  → '+(o.value||'')).join('\n'))}</pre>`:''}
-    ${p.steps&&p.steps.length?`<h3>Steps</h3><pre>${esc(p.steps.map((s,i)=>(i+1)+'. '+s).join('\n'))}</pre>`:''}
-    ${p.verify?`<h3>Verify</h3><pre>${esc((p.verify.command||'')+(p.verify.expect?'\nexpect: '+p.verify.expect:''))}</pre>`:''}
-    ${p.rejected&&p.rejected.length?`<h3>Rejected alternatives</h3><pre>${esc(p.rejected.map(x=>(x.alternative||'')+' — '+(x.why_not||'')).join('\n'))}</pre>`:''}
-    ${p.finding?`<h3>Finding</h3><pre>${esc(p.finding)}</pre>`:''}
-    ${p.evidence?`<h3>Evidence</h3><pre>${esc(p.evidence)}</pre>`:''}
-    ${p.proposed_diff?`<h3>Proposed diff</h3><pre>${esc(p.proposed_diff)}</pre>`:''}
-    <h3>Payload</h3><pre>${esc(JSON.stringify(p,null,2))}</pre>`;
+    ${foldsHtml(p)}</div>`;
   focusDetailClose();
 }
 
-// Deep-investigation inline PR path outcome (opened / declined / refused / …).
-// Distinct from executor-driven pr_url — a decline leaves pr_url null.
+// The action bar. Left of the rule is the decision: the next step for this
+// row stands out, then the two ways to close it and the way to change what it
+// is. Right of it, the ways to look further, which are all links. The next
+// step is one of four: a manual row has nothing to approve, so it is
+// Reclassify; a row with a PR is reviewed, not approved (CFOP-116: Approve
+// would open a second PR); a node-action waiting on its change record is
+// that record (CFOP-139); anything else is Approve. A closed row has no next
+// step: the same buttons are there, and none of them is green.
+function actionBar(r){
+  const id = Number(r.id);
+  const manual = r.remediation_class==='manual';
+  const next = TERMINAL.has(r.status) ? '' : ' primary';
+  return `<div class="p-actions">
+      ${manual
+        ? `<button type="button" class="chip lg${next}" onclick="showReclassify(${id})" title="Change the class, risk, target repository or confidence. The row then goes back through the gate that decides whether it may run on its own.">Reclassify</button>`
+        : safeUrl(r.pr_url)
+        ? `<a class="chip lg${next}" href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">Review PR ↗</a>`
+        : awaitingRecordMerge(r)
+        ? changeRecordChip(r, true)
+        : `<button type="button" class="chip lg${next}" onclick="approve(${id})" title="Sends this row to the queue. The drain stage claims it and starts an executor; a host fix still waits for its change record to be merged.">Approve → queue</button>`}
+      <button type="button" class="chip lg" onclick="showResolve(${id})" title="Close this row as done, with a note saying what closed it. For a fix that happened some other way.">Resolve</button>
+      <button type="button" class="chip lg" onclick="showReject(${id})" title="Close this row as not to be done, with an optional reason.">Reject</button>
+      ${manual?'':`<button type="button" class="chip lg" onclick="showReclassify(${id})" title="Change the class, risk, target repository or confidence. The row then goes back through the gate that decides whether it may run on its own.">Reclassify</button>`}
+      <span class="rule" aria-hidden="true"></span>
+      <a class="chip lg" href="/console?remediation=${id}" title="open the console chat on this row">${ASK_MARK}Ask about this</a>
+      ${r.investigation_id?`<a class="chip lg" href="/investigations#${Number(r.investigation_id)}" title="Open the investigation this row came from.">Investigation #${Number(r.investigation_id)}</a>`:''}
+      ${trackerChip(r)}
+      ${!awaitingRecordMerge(r)?changeRecordChip(r):''}
+      ${!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)?`<a class="chip" href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer" title="A pull request the recommendation names. This row does not track it.">Named PR ↗</a>`:''}
+      ${stateHints(r)}
+      <div class="p-form" id="actionform"></div>
+    </div>`;
+}
+// The one line a state sometimes needs: why the green button is what it is,
+// and what happens next. Short on purpose; these were paragraphs.
+function stateHints(r){
+  const manual = r.remediation_class==='manual', live = !TERMINAL.has(r.status);
+  const out = [];
+  if(manual) out.push(`<div class="p-hint">Manual: nothing for the executor to run. Reclassify it, or do it by hand and Resolve.</div>`);
+  if(r.status===FILED) out.push(`<div class="p-hint" title="${trackerCopy(r)}">Filed as ${esc(r.tracker_key||'an issue')}. Close it there and this row follows; Resolve here closes the issue.</div>`);
+  if(!manual&&safeUrl(r.pr_url)&&live) out.push(`<div class="p-hint">PR open: merge it and this row resolves, close it and the row is rejected. No Approve here: the executor would open a second PR.</div>`);
+  if(!manual&&!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)&&live) out.push(`<div class="p-hint">The recommendation names a PR no row tracks. If it is the fix, merge it and Resolve; Approve would open another.</div>`);
+  return out.join('');
+}
+
+// The long things, folded and closed: the model's report (markdown, with the
+// protocol tail the pane already shows cut off), the finding, the evidence,
+// the diff, and the payload as the server holds it.
+function foldsHtml(p){
+  const report = reportText({response:p.rendered_context, recommendation:p.recommendation||p.title});
+  const fold = (label, id, text) => text
+    ? `<details><summary>${label}${copyIcon(label.toLowerCase(),{from:id})}</summary><pre id="${id}">${esc(text)}</pre></details>` : '';
+  return `<div class="pcard fold">
+      ${report?`<details><summary>Report${copyIcon('report',{text:report})}</summary><div class="md">${renderMarkdown(report)}</div></details>`:''}
+      ${fold('Finding','fold-finding',p.finding)}
+      ${fold('Evidence','fold-evidence',p.evidence)}
+      ${fold('Proposed diff','fold-diff',p.proposed_diff)}
+      <details><summary>Raw payload${copyIcon('raw payload',{from:'raw-payload'})}</summary>
+        <pre id="raw-payload">${esc(JSON.stringify(p,null,2))}</pre></details>
+    </div>`;
+}
+
 // CFOP-71: a node-incident row shows what it absorbed. A collapse that hides
 // its inputs reads as "one arbitrary symptom won the race" — the operator
 // should be able to see that twelve alerts were one dead node.
 function absorbedHtml(list){
   if(!Array.isArray(list) || !list.length) return '';
-  return `<div class="kv"><b>absorbed</b> <span class="muted">${list.length} further symptom${list.length===1?'':'s'} of this incident</span>
-    <ul style="margin:4px 0 0 18px;padding:0">${list.map(x=>`<li class="muted">${esc(x)}</li>`).join('')}</ul></div>`;
+  return `<div class="prow"><span class="k">absorbed</span><span class="v">${list.length} further symptom${list.length===1?'':'s'} of this incident</span></div>
+    <div class="pnote"><ul>${list.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`;
 }
 
 // CFOP-70: which models actually made the call. The classifier decides a row
@@ -389,15 +448,15 @@ function decidedByHtml(d){
   if(!d || typeof d!=='object') return '';
   const rows=[];
   const c=d.classifier;
-  if(c && c.model) rows.push(`<div class="kv"><b title="The model that gave this row its class, risk and confidence. That decides whether the row MAY run on its own.">classified by</b> <span class="mono">${esc([c.backend,c.model].filter(Boolean).join('/'))}</span></div>`);
+  if(c && c.model) rows.push(`<div class="prow"><span class="k" title="The model that gave this row its class, risk and confidence. That decides whether the row MAY run on its own.">classified by</span><span class="v mono">${esc([c.backend,c.model].filter(Boolean).join('/'))}</span></div>`);
   const j=d.judge;
   if(j && (j.model||j.verdict)){
     const V={confirm:'--accent',downgrade:'--orange',reject:'--red'};
     const jm=[j.backend,j.model].filter(Boolean).join('/');
-    rows.push(`<div class="kv"><b title="A second model's verdict on whether a row that may run on its own SHOULD: confirm, downgrade to needs-human, or reject.">mutation judge</b> ${j.verdict?badge(j.verdict,V[j.verdict]||'--text-muted'):''}
-      ${jm?`<span class="mono">${esc(jm)}</span>`:''}
-      ${j.reason?`<div class="muted">${esc(j.reason)}</div>`:''}
-      ${judgePeersHtml(j.peers)}</div>`);
+    rows.push(`<div class="prow"><span class="k" title="A second model's verdict on whether a row that may run on its own SHOULD: confirm, downgrade to needs-human, or reject.">judge</span><span class="v">${j.verdict?badge(j.verdict,V[j.verdict]||'--text-muted'):''}
+      ${jm?`<span class="mono">${esc(jm)}</span>`:''}</span></div>
+      ${j.reason?`<div class="pnote">${esc(j.reason)}</div>`:''}
+      ${judgePeersHtml(j.peers)}`);
   }
   return rows.join('');
 }
@@ -409,7 +468,34 @@ function decidedByHtml(d){
 function judgePeersHtml(peers){
   if(!Array.isArray(peers) || !peers.length) return '';
   if(peers.length===1 && peers[0].outcome==='verdict') return '';
-  return `<ul style="margin:4px 0 0 18px;padding:0">${peers.map(x=>`<li class="muted"><span class="mono">${esc([x.backend,x.model].filter(Boolean).join('/'))}</span> ${esc(x.outcome||'')}${x.latency_ms!=null?` · ${esc(x.latency_ms)} ms`:''}${x.detail?` — ${esc(x.detail)}`:''}</li>`).join('')}</ul>`;
+  return `<div class="pnote"><ul>${peers.map(x=>`<li><span class="mono">${esc([x.backend,x.model].filter(Boolean).join('/'))}</span> ${esc(x.outcome||'')}${x.latency_ms!=null?` · ${esc(x.latency_ms)} ms`:''}${x.detail?` — ${esc(x.detail)}`:''}</li>`).join('')}</ul></div>`;
+}
+
+// What the dedupe tiers made of this finding when it was queued (CFOP-545):
+// the reason a new row was made, and the model's own answer when it was
+// asked, shadow answers included. It was only in the raw payload.
+function dedupeHtml(n){
+  if(!n || typeof n!=='object') return '';
+  const m=(n.model&&typeof n.model==='object')?n.model:null;
+  const who=m?[m.backend,m.model].filter(Boolean).join('/'):'';
+  if(!n.reason && !m) return '';
+  return `<div class="prow"><span class="k" title="Whether an open row already covered this finding when it was queued, and what decided.">dedupe</span><span class="v">${esc(n.reason||n.source||'—')}</span></div>` +
+    (m&&(who||m.reason)?`<div class="pnote">${who?`<span class="mono">${esc(who)}</span>`:''}${m.mode==='shadow'?' (shadow)':''}${m.reason?' — '+esc(m.reason):''}</div>`:'');
+}
+
+// A re-check of a filed row (CFOP-185) is a decision, not an error: its own
+// row here, with the model that looked and when. The note it rejected a row
+// with still arrives as last_error; lastErrorHtml() labels it for what it is.
+function reverifyHtml(r){
+  const rv=(r.result||{}).reverify;
+  if(!rv || typeof rv!=='object' || !rv.verdict) return '';
+  const V={open:'--text-secondary',resolved:'--accent',rejected:'--red'};
+  const n=Number(rv.checks)||0;
+  const when=[rv.checked_at?fmtTs(rv.checked_at,{seconds:true}):'', n?`${n} check${n===1?'':'s'}`:'',
+    rv.learning_id?`learning #${Number(rv.learning_id)}`:''].filter(Boolean).join(' · ');
+  return `<div class="prow"><span class="k" title="A model re-checks a filed row against the live system: still open, resolved since, or contradicted by the evidence.">re-check</span><span class="v">${badge(rv.verdict==='open'?'still open':rv.verdict,V[rv.verdict]||'--text-muted')}
+      ${rv.verified_by?`<span class="mono">${esc(rv.verified_by)}</span>`:''}</span></div>` +
+    (when?`<div class="pnote">${when}</div>`:'');
 }
 
 // CFOP-319: the commands the node-action allowlist refused, every one of them,
@@ -418,18 +504,55 @@ function judgePeersHtml(peers){
 function blockedCommandsHtml(r){
   const b=(r.result||{}).blocked_commands;
   if(!Array.isArray(b) || !b.length) return '';
-  return `<div class="kv"><b>blocked commands</b> <span class="muted">${b.length} refused by the node-action allowlist</span>
-    <ul style="margin:4px 0 0 18px;padding:0">${b.map(x=>`<li><span class="mono">${esc(x.command||'(plan)')}</span> <span class="muted">— ${esc(x.reason||x.kind||'')}</span></li>`).join('')}</ul></div>`;
+  return `<section class="pcard" aria-label="Blocked commands"><div class="hd"><h3>Blocked commands</h3><span class="muted">${b.length} refused by the node-action allowlist</span></div>
+    <div class="bd"><ul class="cmds">${b.map(x=>`<li><span class="mono">${esc(x.command||'(plan)')}</span> <span class="muted">— ${esc(x.reason||x.kind||'')}</span></li>`).join('')}</ul></div></section>`;
 }
 
+// The investigation this row came from: a link to its own pane. The drawer
+// used to append that investigation's findings to itself as raw JSON.
+function investigationRow(r){
+  if(!r.investigation_id) return '';
+  const n=Number(r.investigation_id);
+  return `<div class="prow"><span class="k">investigation</span><span class="v"><a class="mono" href="/investigations#${n}">#${n}</a></span></div>`;
+}
+
+// A pull request by what it is, not by its URL: owner/repo#N for a GitHub
+// pull, the address otherwise. The href is always the checked URL.
+function prName(url){
+  const m=String(url||'').match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+  return m?(m[1]+'#'+m[2]):String(url||'');
+}
+// pr_url is a PR this row tracks; named_pr_url one its recommendation names
+// (CFOP-116) and nothing reconciles.
+function prRowsHtml(r){
+  const pr=safeUrl(r.pr_url), named=safeUrl(r.named_pr_url);
+  if(pr) return `<div class="prow"><span class="k">PR</span><span class="v"><a class="mono" href="${esc(pr)}" target="_blank" rel="noopener noreferrer">${esc(prName(pr))} ↗</a></span></div>`;
+  if(named) return `<div class="prow"><span class="k" title="A pull request the recommendation names. This row does not track it.">PR named</span><span class="v"><a class="mono" href="${esc(named)}" target="_blank" rel="noopener noreferrer">${esc(prName(named))} ↗</a></span></div>`;
+  return '';
+}
+// Deep-investigation inline PR path outcome (opened / declined / refused / …).
+// Distinct from executor-driven pr_url — a decline leaves pr_url null.
 function prAttemptHtml(attempt){
   if(!attempt || typeof attempt!=='object') return '';
-  const status = attempt.status || 'unknown';
-  const detail = attempt.detail || '';
   const extra = [attempt.path, attempt.branch].filter(Boolean).join(' · ');
-  return `<div class="kv"><b>PR attempt</b> ${esc(status)}` +
-    (detail?` — ${esc(detail)}`:'') +
-    (extra?`<br><span class="muted mono">${esc(extra)}</span>`:'') + `</div>`;
+  return `<div class="prow"><span class="k">PR attempt</span><span class="v">${esc(attempt.status||'unknown')}</span></div>` +
+    (attempt.detail||extra?`<div class="pnote">${esc(attempt.detail||'')}${attempt.detail&&extra?'<br>':''}${extra?`<span class="mono">${esc(extra)}</span>`:''}</div>`:'');
+}
+
+// last_error, folded when it is long (CFOP-414): a paragraph here pushed
+// everything under it off the screen. One that a re-check rejected the row
+// with is that re-check's note, and is called that.
+function lastErrorHtml(r){
+  const t=String(r.last_error||'');
+  const rv=(r.result||{}).reverify;
+  const recheck=r.status==='rejected' && rv && rv.verdict==='rejected';
+  const head=`<div class="prow"><span class="k">${recheck?'re-check note':'last error'}</span></div>`;
+  if(t.length<=140 && t.indexOf('\n')<0) return head+`<div class="pnote">${esc(t)}</div>`;
+  // A re-check's note opens with a line saying which model checked and when;
+  // the Decision card already says that, so the fold shows what it found.
+  const lines=t.split('\n').filter(x=>x.trim());
+  const first=(recheck && lines.length>1)?lines[1]:(lines[0]||'');
+  return head+`<details class="more"><summary>${esc(first.slice(0,140))}<span class="cut">…</span></summary><pre>${esc(t)}</pre></details>`;
 }
 
 // A node-action's change record: the PR whose merge authorises shell on a
@@ -437,9 +560,9 @@ function prAttemptHtml(attempt){
 //
 // Deliberately NOT r.pr_url. That column is the executor-opened gitops PR, and
 // putting the record there would trip two things it has nothing to do with:
-// the "a PR is already open, Approve is off" note below, and the CFOP-116
-// reconciler that resolves a row when its PR merges. The record lives in
-// result.change_record, so it is read and rendered separately.
+// the "a PR is open, no Approve" line above, and the CFOP-116 reconciler that
+// resolves a row when its PR merges. The record lives in result.change_record,
+// so it is read and rendered separately.
 //
 // Without this the whole second gate is invisible: the row shows `queued` and
 // `awaiting change-record approval`, and an operator has no way to reach the
@@ -452,13 +575,14 @@ function changeRecord(r){
 // Parked on the record gate: queued, with the sentinel the agent writes while
 // it polls for the merge. NOT "has a change-record url" -- that url is stamped
 // at open() and never cleared, so it outlives the gate. Used by both the chip
-// decision and the drawer copy so the button and the sentence cannot disagree.
+// decision and the card's copy so the button and the sentence cannot disagree.
 function awaitingRecordMerge(r){
   return r.status === 'queued' && r.last_error === 'awaiting change-record approval';
 }
-function changeRecordChip(r){
+// `primary` when the record stands in for Approve: it is then the next step.
+function changeRecordChip(r, primary){
   const href = safeUrl((changeRecord(r)||{}).url);
-  return href ? `<a class="chip" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="merging this authorises the commands below to run on the host">↗ Review change record</a>` : '';
+  return href ? `<a class="chip${primary?' lg primary':''}" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="merging this authorises the commands below to run on the host">↗ Review change record</a>` : '';
 }
 function changeRecordHtml(r){
   const cr = changeRecord(r);
@@ -472,18 +596,19 @@ function changeRecordHtml(r){
   // waiting, for the same reason. This string is what _prepare_node_action_
   // change_record writes while it polls for approval.
   const waiting = awaitingRecordMerge(r);
-  return `<h3>Change record</h3>` +
-    (href?`<div class="kv"><b>record PR</b> <a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(cr.url)}</a></div>`:'') +
-    (cmds.length?`<div class="kv"><b>runs on</b> ${esc(r.host_id)}</div><pre>${esc(cmds.join('\n'))}</pre>`
-      :`<div class="muted" style="margin:0 0 8px">no command plan recorded yet</div>`) +
-    (waiting&&href?`<div class="muted" style="margin:0 0 8px">this row is waiting on a human, not stuck: merging the record PR authorises exactly the commands above and the executor then runs them. Closing it without merging fails the row instead.</div>`:'');
+  return `<section class="pcard" aria-label="Change record"><div class="hd"><h3>Change record</h3>` +
+    (href?`<a class="mono" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${esc(cr.url)}">record PR ↗</a>`:'') + `</div><div class="bd">` +
+    (cmds.length?`<div class="prow"><span class="k">runs on</span><span class="v mono">${esc(r.host_id)}</span></div><pre>${esc(cmds.join('\n'))}</pre>`
+      :`<div class="muted">no command plan recorded yet</div>`) +
+    (waiting&&href?`<div class="pnote">this row is waiting on a human, not stuck: merging the record PR authorises exactly the commands above and the executor then runs them. Closing it without merging fails the row instead.</div>`:'') +
+    `</div></section>`;
 }
 
 // The issue-tracker item this row was handed to (CFOP-170). Read from the
 // fields the API derives from result.tracker — never from pr_url: a filed row
-// has no PR, and the "a PR is already open" copy above must not fire for an
-// issue link. The drawer shows the key, what the item was last told, and the
-// last error if the tick could not reach the tracker.
+// has no PR, and the "a PR is open" line above must not fire for an issue
+// link. The card shows the key, what the item was last told, and the last
+// error if the tick could not reach the tracker.
 function trackerInfo(r){ const t=(r.result||{}).tracker; return (t&&typeof t==='object')?t:null; }
 function trackerChip(r){
   const href=safeUrl(r.tracker_url);
@@ -496,11 +621,11 @@ function trackerHtml(r){
   const t=trackerInfo(r); if(!t) return '';
   const href=safeUrl(r.tracker_url||t.url);
   const key=r.tracker_key||t.key||'';
-  return `<div class="kv"><b>tracker</b> `+
-    (href?`<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(key||href)}</a>`:esc(key||'—'))+
-    (t.synced_status?` <span class="muted">· synced ${esc(t.synced_status)}${t.synced_at?' at '+fmtTs(t.synced_at,{seconds:true}):''}</span>`:'')+
-    (t.error?`<br><span style="color:#fbbf24">last tracker error: ${esc(t.error)}${t.error_count?' ('+Number(t.error_count)+'×)':''}</span>`:'')+
-    `</div>`;
+  return `<div class="prow"><span class="k">tracker</span><span class="v">`+
+    (href?`<a class="mono" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(key||href)} ↗</a>`:esc(key||'—'))+
+    `</span></div>`+
+    (t.synced_status?`<div class="pnote">synced ${esc(t.synced_status)}${t.synced_at?' at '+fmtTs(t.synced_at,{seconds:true}):''}</div>`:'')+
+    (t.error?`<div class="pnote" style="color:#fbbf24">last tracker error: ${esc(t.error)}${t.error_count?' ('+Number(t.error_count)+'×)':''}</div>`:'');
 }
 
 // Every resolved row gets a close line (so completed_at is always visible),
@@ -513,9 +638,9 @@ function resolutionHtml(r){
   const note = res.resolution_note;
   if(r.status!=='resolved' && !note) return '';
   const who = res.resolved_by || (res.pr_merged ? 'PR merge' : '');
-  return `<div class="kv"><b>resolved</b>` + (who?` by ${esc(who)}`:'') +
-    (r.completed_at?` · ${fmtTs(r.completed_at,{seconds:true,sameDayAs:r.created_at})}`:'') +
-    (note?`<br><span class="muted">${esc(note)}</span>`:'') + `</div>`;
+  const line = [who?'by '+esc(who):'', r.completed_at?fmtTs(r.completed_at,{seconds:true,sameDayAs:r.created_at}):''].filter(Boolean).join(' · ');
+  return `<div class="prow"><span class="k">resolved</span><span class="v">${line||'—'}</span></div>` +
+    (note?`<div class="pnote">${esc(note)}</div>`:'');
 }
 
 function setFilter(s){ filter=s; paint(); }
@@ -594,18 +719,17 @@ async function act(id,verb,body,okmsg){
 function approve(id){ act(id,'approve',null,'approved → queued'); }
 function showReject(id){
   document.getElementById('actionform').innerHTML =
-    `<div class="actform"><input id="rj-note" placeholder="reason (optional)" style="flex:1;min-width:160px">
-     <button class="chip" onclick="saveReject(${id})">Confirm reject</button>
-     <button class="chip" onclick="clearForm()">Cancel</button></div>`;
+    `<input id="rj-note" aria-label="Reason" placeholder="Reason (optional)" onkeydown="if(event.key==='Enter')saveReject(${id})">
+     <button type="button" class="chip danger" onclick="saveReject(${id})">Confirm reject</button>
+     <button type="button" class="chip" onclick="clearForm()">Cancel</button>`;
   const el=document.getElementById('rj-note'); if(el) el.focus();
 }
 function saveReject(id){ act(id,'reject',{note:document.getElementById('rj-note').value},'rejected'); }
 function showResolve(id){
   document.getElementById('actionform').innerHTML =
-    `<div class="actform"><input id="rs-note" placeholder="what closed it (e.g. fixed by hand, superseded)" style="flex:1;min-width:200px"
-       onkeydown="if(event.key==='Enter')saveResolve(${id})">
-     <button class="chip" onclick="saveResolve(${id})">Confirm resolve</button>
-     <button class="chip" onclick="clearForm()">Cancel</button></div>`;
+    `<input id="rs-note" aria-label="What closed it" placeholder="What closed it (fixed by hand, superseded…)" onkeydown="if(event.key==='Enter')saveResolve(${id})">
+     <button type="button" class="chip primary" onclick="saveResolve(${id})">Confirm resolve</button>
+     <button type="button" class="chip" onclick="clearForm()">Cancel</button>`;
   const el=document.getElementById('rs-note'); if(el) el.focus();
 }
 function saveResolve(id){ act(id,'resolve',{note:document.getElementById('rs-note').value},'resolved'); }
@@ -620,27 +744,23 @@ function showReclassify(id){
   // chip pickers (not <select>): native dropdowns don't open inside the
   // transform'd drawer, and chips match the theme + are always clickable.
   const pickRow=(group,vals,cur)=> vals.map(v=>
-    `<button type="button" class="chip pick ${v===cur?'active':''}" data-g="${group}" data-v="${v}"${group==='class'?glossAttr('class',v):''} onclick="pick(this)">${v}</button>`).join(' ');
+    `<button type="button" class="chip pick ${v===cur?'active':''}" aria-pressed="${v===cur}" data-g="${group}" data-v="${v}"${group==='class'?glossAttr('class',v):''} onclick="pick(this)">${v}</button>`).join(' ');
   document.getElementById('actionform').innerHTML =
-    `<div class="actform" style="flex-direction:column;align-items:stretch;gap:10px">
-       <div><span class="muted">class</span><br>${pickRow('class',['gitops-patch','k8s-action','k8s-imperative','node-action','data-fix','external-system','manual'],cls)}</div>
-       <div><span class="muted">risk</span><br>${pickRow('risk',['low','med','high'],risk)}</div>
-       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-         <span class="muted">repo</span>
-         <input id="rc-repo" type="text" value="${esc(repo)}" placeholder="owner/repo (gitops-patch target)" style="flex:1;min-width:200px">
-       </div>
-       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-         <span class="muted">conf</span>
-         <input id="rc-conf" type="number" min="0" max="1" step="0.05" value="${conf==null?'':conf}" placeholder="keep" style="width:80px" title="Confidence, 0 to 1. Leave empty to keep the current value.">
-         <button class="chip" onclick="saveReclassify(${id})">Save</button>
-         <button class="chip" onclick="clearForm()">Cancel</button>
-       </div>
+    `<div class="col">
+       <div class="line"><span class="lbl">class</span>${pickRow('class',['gitops-patch','k8s-action','k8s-imperative','node-action','data-fix','external-system','manual'],cls)}</div>
+       <div class="line"><span class="lbl">risk</span>${pickRow('risk',['low','med','high'],risk)}</div>
+       <div class="line"><span class="lbl">repo</span>
+         <input id="rc-repo" type="text" aria-label="Target repository" value="${esc(repo)}" placeholder="owner/repo (gitops-patch target)"></div>
+       <div class="line"><span class="lbl">conf</span>
+         <input id="rc-conf" type="number" aria-label="Confidence" min="0" max="1" step="0.05" value="${conf==null?'':conf}" placeholder="keep" title="Confidence, 0 to 1. Leave empty to keep the current value.">
+         <button type="button" class="chip" onclick="saveReclassify(${id})">Save</button>
+         <button type="button" class="chip" onclick="clearForm()">Cancel</button></div>
      </div>`;
 }
 function pick(btn){
   const g=btn.dataset.g;
-  document.querySelectorAll(`#actionform .pick[data-g="${g}"]`).forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
+  document.querySelectorAll(`#actionform .pick[data-g="${g}"]`).forEach(b=>{ b.classList.remove('active'); b.setAttribute('aria-pressed','false'); });
+  btn.classList.add('active'); btn.setAttribute('aria-pressed','true');
 }
 function saveReclassify(id){
   const sel=g=>{ const b=document.querySelector(`#actionform .pick.active[data-g="${g}"]`); return b?b.dataset.v:undefined; };
@@ -648,13 +768,6 @@ function saveReclassify(id){
     confidence:document.getElementById('rc-conf').value,
     repo:document.getElementById('rc-repo').value},'reclassified');
 }
-async function viewInvestigation(id){
-  let inv; try{ inv=await (await fetch('/api/investigations/'+id)).json(); }catch(e){ return; }
-  if(inv.error){ document.getElementById('detail').innerHTML+='<p class="muted">investigation not found</p>'; return; }
-  document.getElementById('detail').innerHTML +=
-    `<h3>Investigation #${id} — ${esc(inv.outcome)}</h3><pre>${esc(JSON.stringify(inv.findings,null,2))}</pre>`;
-}
-
 // Deep link from /investigations: /remediations#42 opens that row's drawer.
 // The CFOP-73 handoff for the row's investigation (CFOP-109). The string is the
 // server's — /api/remediations/<id> renders it from the one definition — so this
@@ -662,7 +775,7 @@ async function viewInvestigation(id){
 function attachBlock(r){
   const cmd=r.attach_command;
   if(!cmd) return '';
-  return `<div class="kv"><b title="A command to run in a terminal: it attaches a session to this row's investigation, with its findings loaded.">take over</b> <code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>${copyIcon('attach command',{from:'attach-cmd'})}</div>`;
+  return `<div class="prow"><span class="k" title="A command to run in a terminal: it attaches a session to this row's investigation, with its findings loaded.">take over</span><span class="v"><code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>${copyIcon('attach command',{from:'attach-cmd'})}</span></div>`;
 }
 
 function openFromHash(){ const m=location.hash.match(/^#(\d+)$/); if(m && +m[1]!==OPEN) detail(+m[1]); }

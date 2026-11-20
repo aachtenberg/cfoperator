@@ -288,6 +288,76 @@ td .sub { display:block; margin-top:4px; font-family:var(--font-mono); font-size
 .cmd { background:var(--bg-tertiary); border:1px solid var(--border-subtle); border-radius:var(--radius-xs);
   padding:2px 6px; user-select:all; font-size:12px; }
 
+/* ---- the pane (CFOP-414) ---------------------------------------------------
+   What a drawer holds, once: a head, a meta line, one action bar, cards, and
+   the long things folded. Investigations had this to itself (CFOP-696) and
+   Remediations was a stack of label lines; two drawers that show the same
+   recommendation should not be two layouts. The page keeps what is its own:
+   how wide the drawer is and whether it docks. */
+.pane { display:flex; flex-direction:column; gap:16px; max-width:980px; }
+.pane > * { margin:0; }
+.p-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.p-head h2 { margin:0 !important; font-size:22px !important; }
+.p-head .end { margin-left:auto; display:flex; align-items:center; gap:4px; }
+.p-head .x { float:none; display:grid; place-items:center; min-width:32px; min-height:32px; border-radius:var(--radius-sm); }
+.p-head .x:hover, .p-head .x[aria-pressed="true"] { color:var(--text-primary); background:var(--bg-tertiary); }
+.p-head .x.mx svg { width:16px; height:16px; }
+.p-meta { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:13px; color:var(--text-secondary); }
+.p-meta b { font-weight:400; } .p-meta .v { color:var(--text-primary); }
+/* One bar for everything you can do to the row: the decision on the left,
+   the ways to dig further after the rule. .p-hint is the one line a state
+   sometimes needs under it; .p-form is what a button opens before it sends. */
+.p-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px;
+  border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-secondary); }
+.p-actions input { flex:1 1 200px; min-width:0; min-height:40px; background:var(--bg-primary); }
+.p-actions .rule { width:1px; height:24px; background:var(--border); }
+.p-actions > .chip { min-height:40px; padding:0 14px; }
+.p-actions .chip svg { color:var(--accent); }
+.p-actions .chip.primary svg { color:inherit; }
+.p-actions .p-hint { flex:1 0 100%; font-size:12.5px; line-height:1.45; color:var(--text-secondary); }
+.p-actions .p-form { flex:1 0 100%; display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+  padding-top:12px; border-top:1px solid var(--border-subtle); }
+.p-actions .p-form:empty { display:none; }
+.pcard { border:1px solid var(--border-subtle); border-radius:var(--radius); background:var(--bg-secondary); min-width:0; }
+.pcard > .hd { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border-subtle); }
+.pcard > .hd h3 { margin:0 !important; }
+.pcard > .bd { padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+.pcard > .bd > * { margin:0; }
+.pgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
+.prow { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:6px 12px; font-size:13px; }
+.prow > .k { color:var(--text-secondary); }
+.prow > .v { min-width:0; text-align:right; overflow-wrap:anywhere; }
+/* Under a row: what it needs said in a sentence (a judge's reason, a note). */
+.pnote { font-size:12.5px; line-height:1.45; color:var(--text-secondary); overflow-wrap:anywhere; }
+.pnote ul { margin:4px 0 0 18px; padding:0; }
+/* Folded sections: the long things are complete but closed, so the pane
+   opens on the decision rather than the essay. */
+.fold details { margin:0 !important; border-bottom:1px solid var(--border-subtle); }
+.fold details:last-child { border-bottom:0; }
+.fold summary { display:flex; align-items:center; gap:8px; min-height:44px; padding:0 16px; list-style:none;
+  color:var(--text-primary) !important; font-weight:500 !important; }
+.fold summary::-webkit-details-marker { display:none; }
+.fold summary::before { content:''; width:7px; height:7px; border-right:2px solid var(--text-secondary);
+  border-top:2px solid var(--text-secondary); transform:rotate(45deg); transition:transform .15s; margin-right:4px; }
+.fold details[open] > summary::before { transform:rotate(135deg); }
+.fold details[open] > summary { margin-bottom:0 !important; }
+.fold details > :not(summary) { margin:0 16px 16px; }
+/* The recommendation and its fix (CFOP-113): prose and a list, not JSON.
+   fixHtml() in common.js draws the fix for both drawers. */
+.pane .rec { font-size:15px; line-height:1.55; overflow-wrap:anywhere; }
+.fix > * { margin:0 0 8px; } .fix > :last-child { margin-bottom:0; } .fix { margin:0 0 8px; }
+.fix-meta { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+.tgt { font-size:12px; background:var(--bg-tertiary);
+  border:1px solid var(--border); border-radius:var(--radius-sm); padding:2px 8px; }
+.tgt .k { color:var(--text-secondary); }
+ol.steps { padding-left:22px; line-height:1.55; }
+ol.steps li { margin:0; }
+.verify code { font-family:var(--font-mono); font-size:12px; background:var(--bg-primary);
+  border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:2px 6px; }
+.ev { margin:0 0 8px 8px; font-size:13px; } .ev:last-child { margin-bottom:0; }
+.ev .src { font-family:var(--font-mono); font-size:12px; color:var(--text-secondary); }
+.ev .val { margin-left:12px; white-space:pre-wrap; word-break:break-word; }
+
 /* The tooltip (CFOP-707): one element that common.js fills from whatever
    title the pointer or the keyboard focus is on, and places from that
    element's rect. Fixed and above everything, the drawer, the chat panel and

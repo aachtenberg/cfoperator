@@ -45,7 +45,9 @@ SHARED_HELPERS = ["esc", "color", "badge", "age", "refreshAges", "toast", "trapF
                   "sweepDoc",
                   # CFOP-707: the one tooltip, and the one copy of what the
                   # console's words mean.
-                  "bindTips", "tipShow", "tipHide", "gloss", "glossAttr"]
+                  "bindTips", "tipShow", "tipHide", "gloss", "glossAttr",
+                  # CFOP-414: what both drawers draw from one recommendation.
+                  "fixHtml", "reportText"]
 
 #: Pages whose main content is a polled row list. Same set as
 #: test_console_a11y.LIST_PAGES; repeated rather than imported so this file
