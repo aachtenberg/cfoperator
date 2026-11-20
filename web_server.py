@@ -1410,13 +1410,17 @@ class WebServer:
         @self.app.route('/api/settings/fallback', methods=['POST'])
         @require_role(ROLE_ADMIN)
         def set_fallback_settings():
-            """Toggle paid LLM fallback."""
-            data = request.json
+            """Toggle LLM fallback: off, the provider walk is its head alone."""
+            data = request.json or {}
             enabled = bool(data.get('allow_paid_escalation', False))
             try:
                 self.operator.kb.set_setting('allow_paid_escalation', 'true' if enabled else 'false')
             except Exception as e:
-                logger.warning(f"Could not persist fallback setting: {e}")
+                # Never a 200 for a write that did not happen (CFOP-122). This
+                # one said success; the switch then snapped back on the next
+                # read with nothing to say why.
+                logger.warning(f"Could not persist fallback setting (DB down?): {e}")
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
             return jsonify({'success': True, 'allow_paid_escalation': enabled})
 
         # ── Linked repo registry (CFOP-77) ──
