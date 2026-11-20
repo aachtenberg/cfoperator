@@ -965,8 +965,9 @@ Semantics:
   tag: both show up in the fallback counters, not as errors.
 - When unset, triage uses the primary chain unchanged. Investigations are never
   affected either way.
-- The console's Admin → LLM tab overrides it live (DB beats config; `off` there
-  disables it despite the config key).
+- The console's Admin → LLM tab overrides it live from the Triage step (DB
+  beats config). Choosing **Default** there stores `off`, which disables it
+  despite the config key; choosing the config's own model clears the override.
 - **Deleting the line turns the fine-tune off; pointing it at the previous tag
   rolls back.** The key is inert on any image without the wiring, so config and
   image can be deployed in either order.

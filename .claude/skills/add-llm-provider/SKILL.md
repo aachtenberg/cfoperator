@@ -61,12 +61,13 @@ would silently omit the provider):
 
 Decisions to make explicitly, not by default:
 
-- **Investigation `fallback_order`** in `_get_provider_chain`: adding a
-  provider there changes which paid model an escalation lands on. Gemini and
-  DeepSeek are deliberately out, and
+- **Investigation fallback order** (`LLM_FALLBACK_ORDER` in
+  `agent/agent.py`, walked by `_get_provider_chain` and drawn by Admin → LLM):
+  adding a provider there changes which paid model an escalation lands on.
+  Gemini and DeepSeek are deliberately out, and
   `test_gemini_is_not_in_the_investigation_fallback_chain` asserts each
-  excluded name is absent from the `fallback_order` line — **add the new
-  name to that test**, or the exclusion is a comment, not a guard.
+  excluded name is absent from the constant — **add the new name to that
+  test**, or the exclusion is a comment, not a guard.
 - **`_JUDGE_MODEL_FLOOR`**: the mutation judge's veto holders, frontier-tier
   only, pinned in code. Adding a vendor is its own issue.
 

@@ -252,8 +252,10 @@ llm:
       api_key: ${OPENROUTER_API_KEY}
 
   # Escalation order is fixed in code (ollama → groq → xai → anthropic →
-  # openrouter); a fallback entry supplies the model and key for its
-  # provider, not a position. OpenRouter is last, so it only answers when
+  # openrouter, LLM_FALLBACK_ORDER in agent/agent.py); a fallback entry
+  # supplies the model and key for its provider, not a position. Admin → LLM
+  # draws this chain as it stands, head first, with a model picker on every
+  # rung and a skipped rung marked "no key" or "no model" (CFOP-737). OpenRouter is last, so it only answers when
   # every rung above it has failed; its registry row pins OpenRouter's host
   # routing to the cheapest host that does not declare below fp8 (CFOP-259). Gemini and
   # DeepSeek are deliberately excluded from that chain so a paid escalation
@@ -300,10 +302,11 @@ llm:
   # that one session only. Either key may be omitted —
   # backend alone means that backend's selected model, model alone means
   # the chain picks the backend. Absent entirely = 'auto', what the chain
-  # resolves. Admin → LLM "Models per scope" overrides any of these live
-  # (DB keys `<scope>_backend` / `<scope>_model`) and shows which source is
-  # in effect; the judge rows there drive remediation.judge.models, triage
-  # keeps llm.triage_model, and the executor chain / deep tier are env-only.
+  # resolves. Admin → LLM overrides any of these live from the step's own
+  # picker (DB keys `<scope>_backend` / `<scope>_model`); choosing Default
+  # there hands the step back to this file. The Judge pickers drive
+  # remediation.judge.models, Triage keeps llm.triage_model, and the executor
+  # chain / deep tier are env-only, so they are shown locked.
   # scopes:
   #   sweep:
   #     backend: ollama

@@ -1,7 +1,8 @@
 """A console Save is lit only while there is something to save (CFOP-561).
 
 Every explicit Save in Admin (the per-scope model rows, the provider keys,
-the node-action allowlist) was a ``chip primary`` that was never disabled. In
+the node-action allowlist) was a ``chip primary`` that was never disabled.
+(The model rows have had no Save since CFOP-737; they save on change.) In
 the operator's words, Save stays highlighted even after you save. The fix is
 one helper, ``armSave`` in ``ui/common.js``. A page calls it right after
 rendering from the server, and it keeps the button disabled (grey) while every
@@ -54,9 +55,11 @@ SAVES = primary_saves()
 
 
 def test_the_primary_saves_are_found():
-    """The scope rows, the provider keys and the allowlist. If the pattern
-    stops matching, every guard below passes on an empty list."""
-    assert len([1 for page, _ in SAVES if page == "admin.html"]) >= 3, SAVES
+    """The provider keys and the allowlist. If the pattern stops matching,
+    every guard below passes on an empty list. The per-step model pickers
+    were the third until CFOP-737: a pick there now saves when it changes,
+    so there is no Save on a step to light or grey."""
+    assert len([1 for page, _ in SAVES if page == "admin.html"]) >= 2, SAVES
 
 
 @pytest.mark.parametrize("page,attrs", SAVES)
