@@ -11,6 +11,13 @@ twice: its styles are ``console.css``'s and the fix renderer is
 real to hold the things the old one got wrong: raw JSON on screen, a
 paragraph of ``last_error`` pushing the row off the page, and a green button
 on a row that is already closed.
+
+The page around the pane follows (CFOP-738): the remediations list is items
+and the pane docks beside it, as on Investigations. The dock's own rules
+(what is modal when, one breakpoint, no second copy) are in
+``test_console_shell.py``; here the page is run to hold what docking needs
+of it: the open row is marked and stays marked across a repaint, and the URL
+names it.
 """
 
 from repo_paths import REPO_ROOT
@@ -346,3 +353,144 @@ def test_model_text_is_escaped_everywhere_it_is_drawn(run):
     d = run["drawers"]["4"]
     assert "<img" not in d, "an unescaped model-authored value reached the drawer"
     assert d.count("&lt;img") >= 30, f"only {d.count('&lt;img')} of the hostile values were drawn at all"
+
+
+# --------------------------------------------------------------------------
+# the page around the pane: a list beside it (CFOP-738)
+# --------------------------------------------------------------------------
+
+_DOCK_STUB = r"""
+const fs=require('fs'), vm=require('vm'), path=require('path');
+const page=process.argv[2];
+const html=fs.readFileSync(page,'utf8');
+const src=html.match(/<script>([\s\S]*?)<\/script>/)[1];
+const common=fs.readFileSync(path.join(path.dirname(page),'common.js'),'utf8');
+const ROWS=JSON.parse(process.argv[3]);
+const els={};
+function el(id){return{id,attrs:{},className:'',innerHTML:'',textContent:'',value:'',hidden:false,inert:false,
+  style:{},classList:{add(){},remove(){},contains:c=>id==='detail'&&c==='dock'},
+  setAttribute(k,v){this.attrs[k]=String(v);},removeAttribute(k){delete this.attrs[k];},
+  select(){},remove(){},focus(){},scrollIntoView(){this.revealed=(this.revealed||0)+1;},
+  appendChild(){},addEventListener(){}};}
+const loc={pathname:'/remediations',search:'',hash:'',href:'http://cfop/remediations'};
+const urls=[];
+const hist={replaceState(_s,_t,u){urls.push(u);}};
+const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,Set,RegExp,
+  setTimeout,clearTimeout, setInterval:()=>0, clearInterval:()=>{},
+  location:loc, history:hist,
+  window:{location:loc,history:hist,addEventListener(){},removeEventListener(){},
+    matchMedia:()=>({matches:process.argv[4]==='wide',addEventListener(){}})},
+  getComputedStyle:()=>({getPropertyValue:()=>'#888888'}),
+  document:{documentElement:{},body:{appendChild(){}},hidden:false,addEventListener(){},
+    createElement:()=>el(''), activeElement:null,
+    getElementById:id=>(els[id]=els[id]||el(id)),
+    querySelectorAll:sel=>Object.values(els).filter(e=>/^row-/.test(e.id)&&('aria-current' in e.attrs))},
+  navigator:{},
+  fetch:(url)=>{
+    const m=url.match(/^\/api\/remediations\/(\d+)$/);
+    if(m && ROWS[m[1]]) return Promise.resolve({json:()=>Promise.resolve(ROWS[m[1]])});
+    if(url.indexOf('/api/remediation/flags')===0) return Promise.resolve({json:()=>Promise.resolve({})});
+    return Promise.resolve({json:()=>Promise.resolve({remediations:Object.values(ROWS)})});
+  }};
+box.globalThis=box; vm.createContext(box); vm.runInContext(common,box); vm.runInContext(src,box);
+const tick=()=>new Promise(r=>setImmediate(r));
+const marked=()=>Object.values(els).filter(e=>e.attrs['aria-current']==='true').map(e=>e.id);
+(async () => {
+  await tick(); await tick();
+  const out={};
+  await box.detail(1);
+  out.afterOpen={marked:marked(), url:urls[urls.length-1], modal:els['detail'].attrs['aria-modal'],
+    revealed:els['row-1'].revealed||0, hasMax:els['detail'].innerHTML.indexOf('id="detail-max"')>=0};
+  await box.detail(2);
+  out.afterSecond={marked:marked(), url:urls[urls.length-1]};
+  // A poll that changed something replaces the rows; the new <tr> has no mark.
+  delete els['row-2'].attrs['aria-current'];
+  box.paint();
+  out.afterRepaint={marked:marked()};
+  box.toggleMax();
+  out.maximized={modal:els['detail'].attrs['aria-modal'], max:box.MAX};
+  box.toggleMax();
+  box.closeDetail();
+  out.afterClose={marked:marked(), url:urls[urls.length-1]};
+  out.rows={filed:els['rows-filed'].innerHTML, active:els['rows'].innerHTML, done:els['rows-done'].innerHTML};
+  console.log(JSON.stringify(out));
+})().catch(e => { console.error(e); process.exit(1); });
+"""
+
+
+def _dock(tmp_path_factory, screen):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    stub = tmp_path_factory.mktemp("dock") / "stub.js"
+    stub.write_text(_DOCK_STUB, encoding="utf-8")
+    rows = {k: v for k, v in ROWS.items() if k in ("1", "2", "3")}
+    out = subprocess.run([node, str(stub), str(UI / "remediations.html"), json.dumps(rows), screen],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+@pytest.fixture(scope="module")
+def wide(tmp_path_factory):
+    return _dock(tmp_path_factory, "wide")
+
+
+@pytest.fixture(scope="module")
+def narrow(tmp_path_factory):
+    return _dock(tmp_path_factory, "narrow")
+
+
+def test_the_open_row_is_marked_and_only_that_one(wide):
+    assert wide["afterOpen"]["marked"] == ["row-1"]
+    assert wide["afterSecond"]["marked"] == ["row-2"], "the row you left is still marked, or the new one is not"
+    assert wide["afterClose"]["marked"] == []
+
+
+def test_a_repaint_does_not_lose_the_open_row(wide):
+    """The list repaints whenever a poll brings a change, and the pane beside
+    it stays open. The mark has to come back with the rows."""
+    assert wide["afterRepaint"]["marked"] == ["row-2"]
+
+
+def test_the_url_names_the_open_row(wide):
+    assert wide["afterOpen"]["url"] == "#1" and wide["afterSecond"]["url"] == "#2"
+    assert wide["afterClose"]["url"] == "/remediations", "closing left the row's id in the URL"
+
+
+def test_docked_is_not_modal_and_a_drawer_or_a_maximized_pane_is(wide, narrow):
+    assert wide["afterOpen"]["modal"] == "false", "beside the list, Tab has to be able to reach the list"
+    assert narrow["afterOpen"]["modal"] == "true"
+    assert wide["maximized"] == {"modal": "true", "max": True}
+    assert wide["afterOpen"]["hasMax"], "the pane has no maximize button"
+
+
+def test_docking_brings_the_clicked_row_back_into_view(wide, narrow):
+    """Opening a row narrows the page and folds the pipeline away, so the row
+    is no longer under the pointer. Over the list (narrow) nothing moves."""
+    assert wide["afterOpen"]["revealed"] == 1
+    assert narrow["afterOpen"]["revealed"] == 0
+
+
+def test_the_list_rows_are_items_in_their_buckets(wide):
+    rows = wide["rows"]
+    assert 'id="row-1"' in rows["filed"] and 'id="row-2"' in rows["active"] and 'id="row-3"' in rows["done"]
+    row = re.search(r'<tr id="row-1".*?</tr>', rows["filed"], re.S).group(0)
+    cells = re.findall(r'<td class="([a-z]+)', row)
+    assert cells == ["id", "oc", "when", "trig", "meta"], cells
+    for text in ("#1", "filed", "low risk", "Inspect the patch cable", "manual", "headless-gpu",
+                 "anthropic/claude-sonnet-4-6", "conf 0.92", "CFOP-736"):
+        assert text in row, f"the row lost {text}"
+
+
+def test_what_folds_beside_a_docked_pane_is_marked_and_only_folds_there():
+    page = read("remediations.html")
+    assert re.search(r'<div class="card-body dock-fold">\s*<div class="switches" id="flags">', page)
+    assert re.search(r'<section class="[^"]*\bdock-fold\b[^"]*" id="tiles"', page)
+    css = re.sub(r"/\*.*?\*/", "", read("console.css"), flags=re.S)
+    rule = "body:has(#detail.dock.open) .dock-fold { display:none; }"
+    assert css.count(rule) == 1
+    media = css.index("@media (min-width: 1280px)")
+    assert media < css.index(rule) < css.index("#detail.dock.max"), (
+        "the fold is not inside the dock's media query: the pipeline would vanish under a plain drawer too")
+    assert css.count(".dock-fold") == 1, "something else hides .dock-fold"

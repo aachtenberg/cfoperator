@@ -360,50 +360,103 @@ def test_ask_is_on_every_page_but_the_chat(tmp_path, pathname, asks):
         assert r["askHref"] == "/console" and r["askName"] == "Ask CFOperator"
 
 
-# --- investigations: docked pane is not modal -----------------------------
+# --- a docked pane is not modal ---------------------------------------------
+#
+# Investigations had the dock to itself (CFOP-696); Remediations docks the
+# same way (CFOP-738), so the script is common.js's and the styles are
+# console.css's. A page opts in with class="dock" on its drawer.
 
-def test_a_docked_pane_lowers_aria_modal_and_trap_focus_respects_it():
+#: Pages whose drawer docks beside the list. Derived, so a third page that
+#: opts in is checked without being listed.
+DOCK_PAGES = [p for p in CONSOLE_PAGES
+              if re.search(r'<div id="detail"[^>]*class="[^"]*\bdock\b', read(p))]
+
+
+def test_the_docking_pages_are_found():
+    """Derived from the markup; an empty set would make the checks vacuous."""
+    assert {"investigations.html", "remediations.html"} <= set(DOCK_PAGES)
+    assert "events.html" not in DOCK_PAGES, "events.html docks now: give it an items list and say so here"
+
+
+@pytest.mark.parametrize("page", DOCK_PAGES)
+def test_a_docked_pane_lowers_aria_modal_and_trap_focus_respects_it(page):
     """Beside the list, the pane is not a layer over the page: Tab has to be
     able to reach the list, so the dialog must stop claiming to be modal and
     the trap must believe it. The static markup stays modal — that is what a
     narrow screen gets."""
-    page = read("investigations.html")
-    assert re.search(r'<div id="detail"[^>]*aria-modal="true"', page)
-    assert "setAttribute('aria-modal', docked()?'false':'true')" in page
-    # The script's width and the stylesheet's are one number.
-    mq = re.search(r"const DOCK_MQ='\(min-width: (\d+)px\)'", page).group(1)
-    assert f"@media (min-width: {mq}px)" in page, "DOCK_MQ and the dock's media query disagree"
+    html = read(page)
+    assert re.search(r'<div id="detail"[^>]*aria-modal="true"', html)
+    js = "\n".join(re.findall(r"<script>(.*?)</script>", html, re.S))
+    # Every open and every repaint re-decides, or a pane opened narrow and
+    # widened keeps the wrong answer.
+    assert js.count("applyModal()") >= 2, f"{page} does not re-decide modality when it opens and paints"
+    assert "markOpen()" in js, f"{page} does not mark the open row in the list beside the pane"
     common = read("common.js")
+    assert "setAttribute('aria-modal', docked()?'false':'true')" in common
+    # The script's width and the stylesheet's are one number.
+    mq = re.search(r"const DOCK_MQ='\(min-width: (\d+)px\)'", common).group(1)
+    assert f"@media (min-width: {mq}px)" in CSS.read_text(encoding="utf-8"), (
+        "DOCK_MQ and the dock's media query disagree")
     trap = re.search(r"function trapFocus\(dialog\)\{.*?\n\}", common, re.S).group(0)
     assert "getAttribute('aria-modal')==='false'" in trap
 
 
+@pytest.mark.parametrize("page", DOCK_PAGES)
+def test_a_docking_page_keeps_no_copy_of_the_dock(page):
+    """The copies drift the day they exist: a page with its own breakpoint is
+    a page whose pane and stylesheet can disagree about being docked."""
+    html = read(page)
+    for name in ("DOCK_MQ=", "function docked(", "function applyModal(", "function toggleMax(",
+                 "function maxButton(", "var MAX", "var WIDE"):
+        assert name not in html, f"{page} defines {name} itself; the dock is common.js's"
+    styles = "\n".join(re.findall(r"<style>(.*?)</style>", html, re.S))
+    styles = re.sub(r"/\*.*?\*/", "", styles, flags=re.S)
+    assert "--list-w" not in styles and "#backdrop" not in styles, (
+        f"{page} styles the dock itself; it is console.css's")
+    assert not re.search(r"^\s*(?:#list\b|\.items\b)", styles, re.M), (
+        f"{page} lays out the item list itself; it is console.css's")
+
+
+def test_every_docking_page_lists_items():
+    """A table does not fit the column a docked pane leaves. The list beside
+    it has to be the items layout, with the cells that layout places."""
+    for page in DOCK_PAGES:
+        html = read(page)
+        assert re.search(r'<section class="card items" id="list"', html), f"{page}: the list is not an items list"
+        for cell in ('class="id', 'class="oc"', 'class="when', 'class="trig"', 'class="meta'):
+            assert cell in html, f"{page}: its rows have no {cell} cell for the items layout to place"
+
+
 _DOCK_STUB = r"""
 const fs=require('fs'), vm=require('vm');
-const page=fs.readFileSync(process.argv[2],'utf8');
-const a=page.indexOf("const DOCK_MQ="), b=page.indexOf("try{ const mq=window.matchMedia");
-const detail={attrs:{}, setAttribute(k,v){this.attrs[k]=v;}};
+const src=fs.readFileSync(process.argv[2],'utf8');
+const a=src.indexOf("const DOCK_MQ="), b=src.indexOf("try{ const mq=window.matchMedia");
+const docks=process.argv[4]==='dock';
+const detail={attrs:{}, setAttribute(k,v){this.attrs[k]=v;}, classList:{contains:c=>docks&&c==='dock'}};
 const box={window:{matchMedia:()=>({matches:process.argv[3]==='wide-screen'})},
-  document:{getElementById:()=>detail}, MAX:false};
+  document:{getElementById:()=>detail}};
 vm.createContext(box);
-vm.runInContext('var MAX=false;'+page.slice(a,b)+';globalThis.s=(m,w)=>{MAX=m;WIDE=w;applyModal();return document.getElementById("detail").attrs["aria-modal"];}',box);
+vm.runInContext(src.slice(a,b)+';globalThis.s=(m,w)=>{MAX=m;WIDE=w;applyModal();return document.getElementById("detail").attrs["aria-modal"];}',box);
 console.log(JSON.stringify({plain:box.s(false,false), max:box.s(true,false), terminal:box.s(false,true)}));
 """
 
 
-@pytest.mark.parametrize("screen,expected", [
+@pytest.mark.parametrize("screen,drawer,expected", [
     # Beside the list: not modal. Maximized, or run over the list by an open
     # terminal: nothing beside it is visible, so it is modal again.
-    ("wide-screen", {"plain": "false", "max": "true", "terminal": "true"}),
-    ("narrow-screen", {"plain": "true", "max": "true", "terminal": "true"}),
+    ("wide-screen", "dock", {"plain": "false", "max": "true", "terminal": "true"}),
+    ("narrow-screen", "dock", {"plain": "true", "max": "true", "terminal": "true"}),
+    # A drawer that did not opt in (Events) is a layer over the page at every
+    # width. common.js is loaded there too, so this is not hypothetical.
+    ("wide-screen", "plain", {"plain": "true", "max": "true", "terminal": "true"}),
 ])
-def test_the_pane_is_modal_whenever_it_covers_the_list(tmp_path, screen, expected):
+def test_the_pane_is_modal_whenever_it_covers_the_list(tmp_path, screen, drawer, expected):
     node = shutil.which("node")
     if node is None:
         pytest.skip("node not available")
     stub = tmp_path / "dock.js"
     stub.write_text(_DOCK_STUB, encoding="utf-8")
-    out = subprocess.run([node, str(stub), str(UI / "investigations.html"), screen],
+    out = subprocess.run([node, str(stub), str(UI / "common.js"), screen, drawer],
                          capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout) == expected

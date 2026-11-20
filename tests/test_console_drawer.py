@@ -40,11 +40,11 @@ UI = REPO_ROOT / "ui"
 
 #: Console pages whose main content is a row list plus a slide-in detail
 #: drawer. What is asserted below is the *inbound* half only — a pasted URL
-#: opens the row it names. investigations.html also writes the hash as you
-#: click, so its URL always names what you are looking at; remediations.html
-#: does not yet, and this does not claim otherwise. A third drawer page added
-#: later should have to think about linkability rather than quietly not have
-#: it.
+#: opens the row it names. Both pages also write the hash as you click, so
+#: the URL always names what you are looking at: investigations.html since
+#: CFOP-73 (run for real further down), remediations.html since CFOP-738
+#: (test_console_pane.py). A third drawer page added later should have to
+#: think about linkability rather than quietly not have it.
 DRAWER_PAGES = ["investigations.html", "remediations.html"]
 
 #: Pages offering a one-click copy of something. The console is normally

@@ -240,6 +240,57 @@ function bindCopyIcons(root){
   });
 }
 
+// ---- the docked pane (from investigations.html, CFOP-696; shared CFOP-738) --
+// A page whose drawer carries class="dock" gets a pane instead: at DOCK_MQ and
+// wider the open row sits beside the list (console.css's media query is the
+// same width) and the list stays usable, so the dialog must not claim to be
+// modal. aria-modal goes to "false" and trapFocus() stops holding Tab.
+// Maximized, or run over the list by something that needs the room, it covers
+// the page again and is modal again. Without the class none of this applies:
+// docked() is false and the drawer is the modal one every page starts with.
+//
+// MAX and WIDE are var, not let: the console tests read them through the
+// page's global scope. Page state, not stored: it survives every repaint of
+// the pane but not a reload. Nothing here touches storage, because the
+// investigations page must not (test_console_cockpit).
+const DOCK_MQ='(min-width: 1280px)';
+var MAX=false;   // maximized: the whole viewport, rail included
+var WIDE=false;  // the page has run the pane over its list (a terminal, on Investigations)
+function docks(){ try{ const d=document.getElementById('detail'); return !!(d && d.classList && d.classList.contains && d.classList.contains('dock')); }catch(e){ return false; } }
+function docked(){ try{ return docks() && !!(window.matchMedia && window.matchMedia(DOCK_MQ).matches) && !MAX && !WIDE; }catch(e){ return false; } }
+function applyModal(){ const d=document.getElementById('detail'); if(d&&d.setAttribute) d.setAttribute('aria-modal', docked()?'false':'true'); }
+try{ const mq=window.matchMedia?window.matchMedia(DOCK_MQ):null; if(mq&&mq.addEventListener) mq.addEventListener('change', applyModal); }catch(e){}
+// The open row carries aria-current; moved by attribute so opening a row does
+// not rebuild the list under the pointer. Rows are tr#row-<id> on every list.
+function markOpenRow(id){
+  if(!document.querySelectorAll) return;
+  document.querySelectorAll('tr[aria-current]').forEach(tr=>tr.removeAttribute('aria-current'));
+  const tr=id==null?null:document.getElementById('row-'+id);
+  if(tr&&tr.setAttribute) tr.setAttribute('aria-current','true');
+}
+// Maximize (CFOP-113). The pane leaves the list visible beside it; a long
+// report, the raw payload or a terminal want the room.
+const MAX_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
+const RESTORE_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>';
+// The accessible name follows the state along with the title and the icon:
+// a screen reader must not hear "maximize" on a control that restores.
+function maxLabel(){ return MAX?'Restore panel width':'Maximize panel'; }
+function maxButton(){
+  return `<button type="button" class="x mx" id="detail-max" onclick="toggleMax()" aria-pressed="${MAX}" aria-label="${maxLabel()}" title="${maxLabel()}">${MAX?RESTORE_ICON:MAX_ICON}</button>`;
+}
+function applyMax(){
+  const d=document.getElementById('detail');
+  if(MAX) d.classList.add('max'); else d.classList.remove('max');
+  const b=document.getElementById('detail-max');
+  if(b){ b.setAttribute('aria-pressed',String(MAX)); b.setAttribute('aria-label',maxLabel()); b.title=maxLabel(); b.innerHTML=MAX?RESTORE_ICON:MAX_ICON; }
+}
+// refit() is the investigations page's: an open terminal takes the new width.
+function toggleMax(){
+  MAX=!MAX;
+  applyMax(); applyModal();
+  if(typeof refit==='function') refit();
+}
+
 // ---- the fix (from investigations.html, CFOP-414) -------------------------
 // A recommendation's fix as an operator reads it: the risk and what it
 // touches, the steps, how to know it worked. The evidence the model read and
