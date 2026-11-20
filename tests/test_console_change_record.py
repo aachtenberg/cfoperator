@@ -194,7 +194,7 @@ def test_the_helpers_are_actually_wired_into_the_drawer():
     # keying on it hides Approve forever -- including on the needs-human row
     # that Approve exists to retry. See test_approve_survives_a_failed_row.
     approve_branch = re.search(
-        r"awaitingRecordMerge\(r\)\s*\n\s*\?\s*changeRecordChip\(r\)\s*\n\s*:\s*`<button class=\"chip\" onclick=\"approve",
+        r"awaitingRecordMerge\(r\)\s*\n\s*\?\s*changeRecordChip\(r[^)]*\)\s*\n\s*:\s*`<button [^`>]*onclick=\"approve",
         src)
     assert approve_branch, "the change-record chip must stand in for Approve only while the record is pending"
     # And the queue LIST must LINK it -- the operator who found this had to open

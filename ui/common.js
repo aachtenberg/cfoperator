@@ -240,6 +240,71 @@ function bindCopyIcons(root){
   });
 }
 
+// ---- the fix (from investigations.html, CFOP-414) -------------------------
+// A recommendation's fix as an operator reads it: the risk and what it
+// touches, the steps, how to know it worked. The evidence the model read and
+// the alternatives it turned down justify the steps but are not the steps, so
+// they fold. The shape is agent.py's _FIX_JSON_SCHEMA, and it reaches the
+// console twice: as findings.fix on an investigation and, flattened, as the
+// payload of the queue row that investigation became. Both drawers call this,
+// which is why it is here. Every field is optional: older rows carry fewer.
+// The risk badge is the caller's to ask for; a queue row shows its risk in
+// the head already.
+const RISK_TONE={low:'--accent',med:'--orange',medium:'--orange',high:'--red'};
+function fixHtml(fix, opts){
+  if(!fix || typeof fix!=='object') return '';
+  const o=opts||{};
+  const targets=Array.isArray(fix.targets)?fix.targets.filter(t=>t&&typeof t==='object'):[];
+  const steps=Array.isArray(fix.steps)?fix.steps.filter(x=>x!=null&&String(x).trim()).map(String):[];
+  const observed=Array.isArray(fix.observed)?fix.observed.filter(x=>x&&typeof x==='object'):[];
+  const rejected=Array.isArray(fix.rejected)?fix.rejected.filter(x=>x&&typeof x==='object'):[];
+  const v=(fix.verify&&typeof fix.verify==='object')?fix.verify:null;
+  const meta=[(o.risk!==false&&fix.risk)?badge('risk '+fix.risk, RISK_TONE[String(fix.risk).toLowerCase()]||'--text-muted'):'']
+    .concat(targets.map(t=>`<span class="tgt"><span class="k">${esc(t.kind||'target')}</span> ${esc(t.id||'')}${t.repo?' <span class="k">'+esc(t.repo)+'</span>':''}</span>`))
+    .filter(Boolean).join('');
+  let h='';
+  if(meta) h+=`<div class="fix-meta">${meta}</div>`;
+  if(steps.length) h+=`<div class="kv"><b>steps</b>${copyIcon('steps',{text:steps.map((x,i)=>(i+1)+'. '+x).join('\n')})}</div>
+    <ol class="steps">${steps.map(x=>`<li>${esc(x)}</li>`).join('')}</ol>`;
+  if(v&&(v.command||v.expect)) h+=`<div class="kv verify"><b>verify</b> ${v.command?`<code id="verify-cmd">${esc(v.command)}</code>${copyIcon('verify command',{from:'verify-cmd'})}`:''}${v.expect?` <span class="muted">→ expect: ${esc(v.expect)}</span>`:''}</div>`;
+  const chk=(fix.observed_check&&typeof fix.observed_check==='object')?fix.observed_check:null;
+  if(chk&&chk.status) h+=`<div class="kv"><b title="Whether what the model said it observed was checked against the file it named. Unverified means it could not be checked, not that it is wrong.">observed check</b> ${esc(chk.status)} <span class="muted">${esc(chk.reason||'')}</span></div>`;
+  if(observed.length||rejected.length){
+    const n=[observed.length?observed.length+' observed':'', rejected.length?rejected.length+' rejected':''].filter(Boolean).join(' · ');
+    h+=`<details><summary>Evidence <span class="muted">(${n})</span></summary>`;
+    h+=observed.map(x=>`<div class="ev"><div class="src">${esc(x.source||'')}</div><div class="val">${esc(x.value||'')}</div></div>`).join('');
+    h+=rejected.map(x=>`<div class="ev"><span class="src">rejected</span> ${esc(x.alternative||'')} <span class="muted">— ${esc(x.why_not||'')}</span></div>`).join('');
+    h+=`</details>`;
+  }
+  return h?`<div class="fix">${h}</div>`:'';
+}
+
+// ---- the report and the Ask mark (from investigations.html, CFOP-414) ------
+// Both drawers fold the model's own write-up and both hand their row to the
+// console chat, so the text that is shown and the icon on that link are here.
+//
+// The report ends with the protocol tail the agent parses — STATUS:,
+// RECOMMENDATION:, FIX: {json}. They are painted above as the outcome badge,
+// the recommendation and the fix, so when either of those is present the tail
+// is cut from the display. Raw findings keep it verbatim; a report that is
+// only a tail is shown whole.
+//
+// The anchor is stricter than agent.py's (_extract_status takes the last
+// "status:" anywhere, any case): here it is the last line-start STATUS: that
+// carries one of the prompt's verdicts. A bare "Status:" is what kubectl
+// describe prints — "Status: Running" quoted after the verdict would otherwise
+// become the cut point, leaving the JSON tail in the report and dropping the
+// notes after it.
+const VERDICT_LINE=/(?:^|\n)[ \t]*STATUS[ \t]*:[ \t]*(?:resolved|needs[_ -]?action|monitoring|escalated?)\b/ig;
+function reportText(f){
+  const t=String(f.response||'').trim();
+  if(!t || !(f.recommendation||f.fix)) return t;
+  let cut=-1, m; VERDICT_LINE.lastIndex=0;
+  while((m=VERDICT_LINE.exec(t))) cut=m.index;
+  return cut>0 ? t.slice(0,cut).trim() : t;
+}
+const ASK_MARK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.35-5.65M20 4v4h-4"/><path d="M12 7.6l1.1 3.3 3.3 1.1-3.3 1.1-1.1 3.3-1.1-3.3-3.3-1.1 3.3-1.1z" fill="currentColor" stroke-width="1"/></svg>';
+
 // ---- markdown (from index.html, CFOP-113) ---------------------------------
 // Agent output is LLM text that quotes log and alert lines verbatim, so the
 // markdown it contains is untrusted, and marked emits raw HTML by design.

@@ -64,66 +64,16 @@
      and over the dock; the class is on #detail, which repaints its contents
      but is never itself replaced. */
   #detail.max { left:0; width:100vw; background:var(--bg-secondary); }
-  .pane { display:flex; flex-direction:column; gap:16px; max-width:980px; }
-  .pane > * { margin:0; }
-  .p-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
-  .p-head h2 { margin:0 !important; font-size:22px !important; }
-  .p-head .end { margin-left:auto; display:flex; align-items:center; gap:4px; }
-  .p-head .x { float:none; display:grid; place-items:center; min-width:32px; min-height:32px; border-radius:var(--radius-sm); }
-  .p-head .x:hover, .p-head .x[aria-pressed="true"] { color:var(--text-primary); background:var(--bg-tertiary); }
-  .p-head .x.mx svg { width:16px; height:16px; }
+  /* The pane's own kit (.pane, .p-head, .p-meta, .p-actions, .pcard, .pgrid, .prow,
+     .fold, .rec, .fix) is console.css's since CFOP-414: Remediations draws the same pane. */
   .trigger { padding:12px 14px; border-radius:var(--radius-sm); background:var(--bg-secondary);
     border:1px solid var(--border-subtle); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
   #detail.max .trigger, #detail.max .pcard, #detail.max .p-actions { background:var(--bg-primary); }
-  .p-meta { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:13px; color:var(--text-secondary); }
-  .p-meta b { font-weight:400; } .p-meta .v { color:var(--text-primary); }
-  /* One bar for everything you can do to this investigation: the verdict on
-     the left, the ways to dig further after the rule. */
-  .p-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px;
-    border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-secondary); }
-  .p-actions input { flex:1 1 200px; min-width:0; min-height:40px; background:var(--bg-primary); }
-  .p-actions .rule { width:1px; height:24px; background:var(--border); }
-  .p-actions .chip svg { color:var(--accent); }
-  .pcard { border:1px solid var(--border-subtle); border-radius:var(--radius); background:var(--bg-secondary); min-width:0; }
-  .pcard > .hd { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border-subtle); }
-  .pcard > .hd h3 { margin:0 !important; }
-  .pcard > .bd { padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
-  .pcard > .bd > * { margin:0; }
-  .pgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
-  .prow { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:6px 12px; font-size:13px; }
-  .prow > .k { color:var(--text-secondary); }
   .sim { display:flex; align-items:center; gap:8px; font-size:13px; min-width:0; }
   .sim .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-secondary); }
   .sim .s { font-family:var(--font-mono); font-size:12px; color:var(--text-muted); white-space:nowrap; }
   .sim button { all:unset; cursor:pointer; color:var(--link); font-family:var(--font-mono); }
   .sim button:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
-  /* Folded sections: the full report and the raw findings are complete but
-     closed, so the pane opens on the decision rather than the essay. */
-  .fold details { margin:0 !important; border-bottom:1px solid var(--border-subtle); }
-  .fold details:last-child { border-bottom:0; }
-  .fold summary { display:flex; align-items:center; gap:8px; min-height:44px; padding:0 16px; list-style:none;
-    color:var(--text-primary) !important; font-weight:500 !important; }
-  .fold summary::-webkit-details-marker { display:none; }
-  .fold summary::before { content:''; width:7px; height:7px; border-right:2px solid var(--text-secondary);
-    border-top:2px solid var(--text-secondary); transform:rotate(45deg); transition:transform .15s; margin-right:4px; }
-  .fold details[open] > summary::before { transform:rotate(135deg); }
-  .fold details[open] > summary { margin-bottom:0 !important; }
-  .fold details > :not(summary) { margin:0 16px 16px; }
-  .rec { font-size:15px; line-height:1.6; }
-  /* The recommendation and its fix (CFOP-113): prose and a list, not JSON. */
-  .rec { margin:0 0 8px; line-height:1.55; }
-  .fix > * { margin:0 0 8px; } .fix > :last-child { margin-bottom:0; } .fix { margin:0 0 8px; }
-  .fix-meta { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
-  .tgt { font-size:12px; background:var(--bg-tertiary);
-    border:1px solid var(--border); border-radius:var(--radius-sm); padding:2px 8px; }
-  .tgt .k { color:var(--text-secondary); }
-  ol.steps { padding-left:22px; line-height:1.55; }
-  ol.steps li { margin:0; }
-  .verify code { font-family:var(--font-mono); font-size:12px; background:var(--bg-primary);
-    border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:2px 6px; }
-  .ev { margin:0 0 8px 8px; font-size:13px; } .ev:last-child { margin-bottom:0; }
-  .ev .src { font-family:var(--font-mono); font-size:12px; color:var(--text-secondary); }
-  .ev .val { margin-left:12px; white-space:pre-wrap; word-break:break-word; }
   /* Markdown from the agent (the full report) is the shared .md — see console.css. */
   /* The cockpit (CFOP-59): a terminal in the pane, beside the finding — which
      is the reason this is not a new tab. */
@@ -513,69 +463,21 @@ async function detail(id, opts){
   if(opts && opts.explain) toggleExplain(id);
 }
 // The recommendation and its fix (CFOP-113), as prose rather than the JSON the
-// drawer used to dump. Order is what an operator acts on: the sentence, the
-// risk and what it touches, the steps, how to know it worked. The evidence the
-// model read and the alternatives it turned down justify the steps but are
-// not the steps, so they fold. The shape is agent.py's _FIX_JSON_SCHEMA; every
-// field is optional here because older rows carry fewer of them.
-const RISK={low:'--accent',med:'--orange',medium:'--orange',high:'--red'};
+// drawer used to dump: the sentence first, then the fix. fixHtml() in common.js
+// draws the fix (risk and targets, steps, verify, folded evidence); the
+// remediations drawer shows the same fix from its row's payload (CFOP-414).
 function recommendationBlock(f, r){
   const rec=String(f.recommendation||'').trim();
   const fix=(f.fix&&typeof f.fix==='object')?f.fix:null;
   const went=r?remDrawerLine(r):'';
   if(!rec && !fix && !went) return '';
-  let h=`<section class="pcard" aria-label="Recommendation"><div class="hd"><h3>Recommendation${rec?copyIcon('recommendation',{from:'rec-text'}):''}</h3>${went}</div><div class="bd">`;
-  h+=rec?`<p class="rec" id="rec-text">${esc(rec)}</p>`:`<p class="muted">The investigation made no recommendation.</p>`;
-  if(!fix) return h+`</div></section>`;
-  const targets=Array.isArray(fix.targets)?fix.targets.filter(t=>t&&typeof t==='object'):[];
-  const steps=Array.isArray(fix.steps)?fix.steps.filter(x=>x!=null&&String(x).trim()).map(String):[];
-  const observed=Array.isArray(fix.observed)?fix.observed.filter(o=>o&&typeof o==='object'):[];
-  const rejected=Array.isArray(fix.rejected)?fix.rejected.filter(x=>x&&typeof x==='object'):[];
-  const v=(fix.verify&&typeof fix.verify==='object')?fix.verify:null;
-  const meta=[fix.risk?badge('risk '+fix.risk, RISK[String(fix.risk).toLowerCase()]||'--text-muted'):'']
-    .concat(targets.map(t=>`<span class="tgt"><span class="k">${esc(t.kind||'target')}</span> ${esc(t.id||'')}${t.repo?' <span class="k">'+esc(t.repo)+'</span>':''}</span>`))
-    .filter(Boolean).join('');
-  h+=`<div class="fix">`;
-  if(meta) h+=`<div class="fix-meta">${meta}</div>`;
-  if(steps.length) h+=`<div class="kv"><b>steps</b>${copyIcon('steps',{text:steps.map((x,i)=>(i+1)+'. '+x).join('\n')})}</div>
-    <ol class="steps">${steps.map(x=>`<li>${esc(x)}</li>`).join('')}</ol>`;
-  if(v&&(v.command||v.expect)) h+=`<div class="kv verify"><b>verify</b> ${v.command?`<code id="verify-cmd">${esc(v.command)}</code>${copyIcon('verify command',{from:'verify-cmd'})}`:''}${v.expect?` <span class="muted">→ expect: ${esc(v.expect)}</span>`:''}</div>`;
-  const chk=(fix.observed_check&&typeof fix.observed_check==='object')?fix.observed_check:null;
-  if(chk&&chk.status) h+=`<div class="kv"><b>observed check</b> ${esc(chk.status)} <span class="muted">${esc(chk.reason||'')}</span></div>`;
-  if(observed.length||rejected.length){
-    const n=[observed.length?observed.length+' observed':'', rejected.length?rejected.length+' rejected':''].filter(Boolean).join(' · ');
-    h+=`<details><summary>Evidence <span class="muted">(${n})</span></summary>`;
-    h+=observed.map(o=>`<div class="ev"><div class="src">${esc(o.source||'')}</div><div class="val">${esc(o.value||'')}</div></div>`).join('');
-    h+=rejected.map(x=>`<div class="ev"><span class="src">rejected</span> ${esc(x.alternative||'')} <span class="muted">— ${esc(x.why_not||'')}</span></div>`).join('');
-    h+=`</details>`;
-  }
-  return h+`</div></div></section>`;
+  return `<section class="pcard" aria-label="Recommendation"><div class="hd"><h3>Recommendation${rec?copyIcon('recommendation',{from:'rec-text'}):''}</h3>${went}</div><div class="bd">`+
+    (rec?`<p class="rec" id="rec-text">${esc(rec)}</p>`:`<p class="muted">The investigation made no recommendation.</p>`)+
+    fixHtml(fix)+`</div></section>`;
 }
-// The full report (findings.response) is the model's own write-up and mostly
-// the recommendation again, at length; it folds so the drawer opens on the
-// decision, not the essay. Markdown, sanitized — see common.js. The copy is
-// the source text, not the rendered HTML, so it pastes as markdown.
-//
-// The report ends with the protocol tail the agent parses — STATUS:,
-// RECOMMENDATION:, FIX: {json}. They are painted above as the outcome badge,
-// the recommendation and the fix, so when either of those is present the tail
-// is cut from the display. Raw findings keep it verbatim; a report that is
-// only a tail is shown whole.
-//
-// The anchor is stricter than agent.py's (_extract_status takes the last
-// "status:" anywhere, any case): here it is the last line-start STATUS: that
-// carries one of the prompt's verdicts. A bare "Status:" is what kubectl
-// describe prints — "Status: Running" quoted after the verdict would otherwise
-// become the cut point, leaving the JSON tail in the report and dropping the
-// notes after it.
-const VERDICT_LINE=/(?:^|\n)[ \t]*STATUS[ \t]*:[ \t]*(?:resolved|needs[_ -]?action|monitoring|escalated?)\b/ig;
-function reportText(f){
-  const t=String(f.response||'').trim();
-  if(!t || !(f.recommendation||f.fix)) return t;
-  let cut=-1, m; VERDICT_LINE.lastIndex=0;
-  while((m=VERDICT_LINE.exec(t))) cut=m.index;
-  return cut>0 ? t.slice(0,cut).trim() : t;
-}
+// The full report (findings.response), folded and as markdown. reportText() in
+// common.js cuts the protocol tail the pane already shows as the badge, the
+// recommendation and the fix; the copy is the source text, so it pastes as markdown.
 function reportBlock(f){
   const t=reportText(f);
   if(!t) return '';
@@ -594,7 +496,6 @@ function reportBlock(f){
 // "Open cockpit" is spawn plus a terminal, and spawn is the admin's: the
 // button is drawn for admins only, and the endpoint refuses everyone else
 // anyway. Members keep the attach line in the Triage card.
-const ASK_MARK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.35-5.65M20 4v4h-4"/><path d="M12 7.6l1.1 3.3 3.3 1.1-3.3 1.1-1.1 3.3-1.1-3.3-3.3-1.1 3.3-1.1z" fill="currentColor" stroke-width="1"/></svg>';
 function actionBar(r){
   const id=Number(r.id);
   const open=(ADMIN&&r.attach_command)?`<button type="button" class="chip lg" id="open-cockpit" onclick="openCockpit(${id})" title="Starts a session on this investigation and opens its terminal here, beside the findings.">Open cockpit</button>`:'';
