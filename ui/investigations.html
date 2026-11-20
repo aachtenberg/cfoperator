@@ -14,61 +14,12 @@
 <!-- Tokens, the rail and the shared kit: one copy, see ui/console.css. -->
 <link rel="stylesheet" href="/console.css">
 <style>
-  /* ---- the list (CFOP-696) ----
-     Rows are items, not a grid of columns: id, outcome and time on one line,
-     the trigger under it, then who answered and where the recommendation
-     went. It is still the one <table> — listKit sorts by its headers, which
-     become a strip of sort buttons — laid out as blocks. */
-  #list table, #list tbody, #list thead { display:block; }
-  #list > table { min-width:0; }
-  #list thead tr { display:flex; flex-wrap:wrap; align-items:center; gap:2px 14px; padding:8px 16px;
-    border-bottom:1px solid var(--border-subtle); }
-  #list thead tr::before { content:'Sort'; font-size:12px; color:var(--text-dim); }
-  #list th { position:static; padding:0; border:0; background:none; }
-  #list tbody tr { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:6px 8px; align-items:center;
-    grid-template-areas:"id oc when" "trig trig trig" "meta meta meta";
-    padding:12px 16px 12px 14px; border-bottom:1px solid var(--border-faint); border-left:2px solid transparent; }
-  #list tbody tr:last-child { border-bottom:0; }
-  #list td { display:block; padding:0; border:0; min-width:0; }
-  #list td.id { grid-area:id; font-size:12px; color:var(--text-muted); }
-  #list td.oc { grid-area:oc; display:flex; flex-wrap:wrap; gap:6px; }
-  #list td.when { grid-area:when; font-size:12px; color:var(--text-muted); }
-  #list td.trig { grid-area:trig; font-size:14px; font-weight:500; line-height:1.4; overflow-wrap:anywhere; }
-  #list td.meta { grid-area:meta; font-size:12px; color:var(--text-muted); overflow-wrap:anywhere; }
-  /* The open row: a surface and a rule, and aria-current for anyone not seeing either. */
-  #list tbody tr[aria-current="true"] { background:#151522; border-left-color:var(--accent); }
-  .list-head { display:flex; flex-direction:column; gap:12px; padding:14px 16px 12px; border-bottom:1px solid var(--border-subtle); }
-  .list-head input[type="search"] { width:100%; min-height:40px; }
-
-  /* ---- the pane ----
-     Wide enough (DOCK_MQ in the script is this same width), an open
-     investigation sits beside the list instead of over it: no backdrop, no
-     shadow, and not modal — the script lowers aria-modal to match, and
-     trapFocus() lets Tab leave a dialog that says it is not modal. Narrower,
-     or maximized, it is the drawer every other page has. */
-  #detail { padding:20px 24px 96px; }
-  #detail.wide { width:min(1100px,96vw); }
-  @media (min-width: 1280px) {
-    :root { --list-w:clamp(380px, 32vw, 520px); }
-    #backdrop { display:none; }
-    #detail { left:calc(var(--rail-w) + var(--list-w)); width:auto; box-shadow:none; background:var(--bg-primary);
-      border-left:1px solid var(--border-subtle); transition:none; padding:20px 28px 96px; }
-    /* A terminal wants 80 columns: the pane takes the list's room while one is open. */
-    #detail.wide { left:var(--rail-w); width:auto; }
-    body:has(#detail.open) header, body:has(#detail.open) main.page { max-width:var(--list-w); padding-left:16px; padding-right:16px; }
-    /* Docked, the pane is not a layer over the page, so the Ask button is not under it. */
-    .cfop-ask { z-index:55; }
-    body:has(#detail.max) .cfop-ask, body:has(#detail.wide) .cfop-ask { display:none; }
-  }
-  /* Maximized (CFOP-113): the whole viewport, rail included. Wins over .wide
-     and over the dock; the class is on #detail, which repaints its contents
-     but is never itself replaced. */
-  #detail.max { left:0; width:100vw; background:var(--bg-secondary); }
-  /* The pane's own kit (.pane, .p-head, .p-meta, .p-actions, .pcard, .pgrid, .prow,
-     .fold, .rec, .fix) is console.css's since CFOP-414: Remediations draws the same pane. */
+  /* The list as items, the pane that docks beside it, and the pane's own kit
+     are console.css's: Remediations has the same three (CFOP-414, CFOP-738).
+     What is left here is what only an investigation has. */
   .trigger { padding:12px 14px; border-radius:var(--radius-sm); background:var(--bg-secondary);
     border:1px solid var(--border-subtle); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
-  #detail.max .trigger, #detail.max .pcard, #detail.max .p-actions { background:var(--bg-primary); }
+  #detail.max .trigger { background:var(--bg-primary); }
   .sim { display:flex; align-items:center; gap:8px; font-size:13px; min-width:0; }
   .sim .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-secondary); }
   .sim .s { font-family:var(--font-mono); font-size:12px; color:var(--text-muted); white-space:nowrap; }
@@ -143,7 +94,7 @@
 </header>
 <script src="/nav.js" defer></script>
 <main class="page">
-<section class="card" id="list" aria-label="Investigation list">
+<section class="card items" id="list" aria-label="Investigation list">
   <div class="list-head">
     <div class="tabs" id="filters" aria-label="Outcome"></div>
     <input type="search" id="f-q" aria-label="Search investigations" placeholder="Trigger, outcome, model, or #id" oninput="searchInput(this.value)">
@@ -160,7 +111,7 @@
 <div id="backdrop" onclick="closeDetail()" aria-hidden="true"></div>
 <!-- A dialog (CFOP-94): inert while closed so its off-screen controls are not in the tab
      order; detail() lifts it, closeDetail() restores it. Labelled by the h2 detail() paints. -->
-<div id="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
+<div id="detail" class="dock" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
 <div id="toasts"></div>
 
 <!-- esc/badge/color/fmtTs/listKit/toast/trapFocus — one copy, see ui/common.js. Not deferred:
@@ -292,14 +243,8 @@ function paint(){
       <td class="meta mono">${meta||'—'}</td></tr>`; }).join('');
   refocusRow(focused);
 }
-// The open row carries aria-current; moved by attribute so opening a row does
-// not rebuild the list under the pointer.
-function markOpen(){
-  if(!document.querySelectorAll) return;
-  document.querySelectorAll('#rows tr[aria-current]').forEach(tr=>tr.removeAttribute('aria-current'));
-  const tr=OPEN===null?null:document.getElementById('row-'+OPEN);
-  if(tr&&tr.setAttribute) tr.setAttribute('aria-current','true');
-}
+// The open row carries aria-current (markOpenRow in common.js).
+function markOpen(){ markOpenRow(OPEN); }
 function setF(o){ filter=o; paint(); }
 // The search narrows the rows the page already holds (the chips' set), per keystroke.
 function searchInput(v){ Q=String(v||'').trim(); paint(); }
@@ -337,21 +282,12 @@ let OPEN=null;
 let OPENER=null;
 function closeDetail(){ const d=document.getElementById('detail'); disconnectCockpit(); d.classList.remove('open'); d.inert=true; document.getElementById('backdrop').classList.remove('open');
   OPEN=null; history.replaceState(null,'',location.pathname+location.search); markOpen(); restoreFocus(); }
-// Docked or drawer (CFOP-696). At DOCK_MQ and wider the open investigation is
-// a pane beside the list (the stylesheet's media query is the same width) and
-// the list stays usable, so the dialog must not claim to be modal: aria-modal
-// goes to "false" and trapFocus() stops holding Tab. Maximized, it covers the
-// page again and is modal again.
-const DOCK_MQ='(min-width: 1280px)';
-//
-// A terminal is the other way to stop being docked: #detail.wide runs the
-// pane over the list so 80 columns fit, and a list you cannot see must not
-// be in the tab order. WIDE follows the class (mountCockpit sets both,
-// disconnectCockpit clears both) and each calls applyModal().
-var WIDE=false;
-function docked(){ try{ return !!(window.matchMedia && window.matchMedia(DOCK_MQ).matches) && !MAX && !WIDE; }catch(e){ return false; } }
-function applyModal(){ const d=document.getElementById('detail'); if(d&&d.setAttribute) d.setAttribute('aria-modal', docked()?'false':'true'); }
-try{ const mq=window.matchMedia?window.matchMedia(DOCK_MQ):null; if(mq&&mq.addEventListener) mq.addEventListener('change', applyModal); }catch(e){}
+// Docked or drawer (CFOP-696): docked(), applyModal() and maximize are
+// common.js's, shared with Remediations (CFOP-738). What is this page's own
+// is the third state: a terminal. #detail.wide runs the pane over the list so
+// 80 columns fit, and a list you cannot see must not be in the tab order.
+// WIDE (declared with the dock) follows the class: mountCockpit sets both,
+// disconnectCockpit clears both, and each calls applyModal().
 function restoreFocus(){
   const o=OPENER; OPENER=null; if(!o) return;
   // The poll may have replaced the row since; the same id is the same row.
@@ -363,32 +299,8 @@ function restoreFocus(){
 document.addEventListener('keydown',e=>{ if(e.key==='Escape' && !COCKPIT.ws) closeDetail(); });
 // Tab stays inside the open drawer (CFOP-95); a Tab the terminal consumed is left to it.
 trapFocus(document.getElementById('detail'));
-// Maximize (CFOP-113). The pane leaves the list visible beside it; a
-// long report, the raw findings or a terminal want the room. Page state, not
-// stored: it survives every drawer repaint but not a reload, because this
-// page touches no storage at all (test_console_cockpit) so the cockpit ticket
-// can never end up there — a convenience does not get to open that door.
-// var, not let — the console tests read this through the page's global scope.
-var MAX=false;
-const MAX_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
-const RESTORE_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>';
-// The accessible name follows the state along with the title and the icon:
-// a screen reader must not hear "maximize" on a control that restores.
-function maxLabel(){ return MAX?'Restore panel width':'Maximize panel'; }
-function maxButton(){
-  return `<button type="button" class="x mx" id="detail-max" onclick="toggleMax()" aria-pressed="${MAX}" aria-label="${maxLabel()}" title="${maxLabel()}">${MAX?RESTORE_ICON:MAX_ICON}</button>`;
-}
-function applyMax(){
-  const d=document.getElementById('detail');
-  if(MAX) d.classList.add('max'); else d.classList.remove('max');
-  const b=document.getElementById('detail-max');
-  if(b){ b.setAttribute('aria-pressed',String(MAX)); b.setAttribute('aria-label',maxLabel()); b.title=maxLabel(); b.innerHTML=MAX?RESTORE_ICON:MAX_ICON; }
-}
-function toggleMax(){
-  MAX=!MAX;
-  applyMax(); applyModal();
-  refit();  // an open terminal takes the new width
-}
+// Maximize (CFOP-113) is common.js's; toggleMax() calls refit() below so an
+// open terminal takes the new width.
 applyMax();
 // Every copy icon in the drawer (CFOP-113) goes through one listener — the
 // drawer repaints by innerHTML, so nothing bound to a button would survive.

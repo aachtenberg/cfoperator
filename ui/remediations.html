@@ -38,18 +38,17 @@
   .stage .n { font-size:22px; font-weight:700; color:color-mix(in srgb, var(--tone) 62%, white); }
   .stage .n.zero { color:var(--text-dim); }
   .stage .l { font-size:12px; color:var(--text-secondary); }
-  .cls { display:flex; flex-direction:column; gap:4px; align-items:flex-start; font-size:12px; }
-  td.rec .t { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-  td.rec { max-width:560px; }
-  .host { max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+  /* The list is items (console.css, CFOP-738); a recommendation can be a
+     paragraph, so the row shows its first two lines. */
+  td.trig .t { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   /* A bucket divider is a full-width row in the one table (CFOP-419), not a
      heading between tables: three tables laid out three sets of columns. */
   tr.divider td { padding:20px 16px 8px; border-top:1px solid var(--border-subtle); border-bottom-color:var(--border-subtle);
     font-size:12px; font-weight:600; color:var(--text-secondary); }
-  /* The drawer is the pane Investigations has (CFOP-414): the kit is
-     console.css's. It stays a drawer over the list at every width, because
-     this list is a table that needs the room; wide enough for two cards. */
-  #detail { width:min(900px,96vw); padding:20px 24px 96px; }
+  /* The drawer is the pane Investigations has (CFOP-414), and it docks beside
+     the list as that one does (CFOP-738): both are console.css's. Below the
+     dock's width it is a drawer, wide enough for two cards. */
+  #detail { width:min(900px,96vw); }
   /* What a button opens before it sends: a note, or the reclassify pickers. */
   .p-form .col { flex:1 0 100%; display:flex; flex-direction:column; gap:10px; }
   .p-form .line { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
@@ -82,28 +81,29 @@
     <span class="muted" id="pipe-summary"></span>
     <span class="end"><button type="button" class="chip lg" onclick="runFeed()" title="Writes the morning summary again now and, with feed on, queues what it recommends. No notification is sent. New rows show up in a minute or two."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4l12 8-12 8z"/></svg>Run feed-summary</button></span>
   </div>
-  <div class="card-body">
+  <div class="card-body dock-fold">
     <div class="switches" id="flags"></div>
     <div id="feedmsg" role="status"></div>
   </div>
 </section>
-<section class="card lifecycle" id="tiles" aria-label="Lifecycle"></section>
-<section class="card" aria-label="Remediation list">
-  <div class="card-head">
+<section class="card lifecycle dock-fold" id="tiles" aria-label="Lifecycle"></section>
+<section class="card items" id="list" aria-label="Remediation list">
+  <div class="list-head">
     <div class="tabs" id="filters" aria-label="Status"></div>
-    <span class="end"><input type="search" id="f-q" aria-label="Search remediations" placeholder="Recommendation, host, class, ticket, #id" oninput="searchInput(this.value)"></span>
+    <input type="search" id="f-q" aria-label="Search remediations" placeholder="Recommendation, host, class, ticket, #id" oninput="searchInput(this.value)">
   </div>
 <!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit.
-     One table with three buckets (CFOP-419): active, filed to the tracker (CFOP-170:
-     noted, not a line item), closed. One header, one column layout; each bucket is a
-     tbody, its divider a full-width row in a tbody of its own so hiding it leaves the
-     bucket's rows tbody in place for render(). -->
+     The rows are laid out as items (CFOP-738), so the header row reads as a strip of
+     sort buttons. One table with three buckets (CFOP-419): active, filed to the tracker
+     (CFOP-170: noted, not a line item), closed. Each bucket is a tbody, its divider a
+     full-width row in a tbody of its own so hiding it leaves the bucket's rows tbody in
+     place for render(). -->
 <table>
   <thead><tr>
     <th data-sort="id">ID</th><th data-sort="status">Status</th>
-    <th data-sort="class" title="What kind of change the fix is, and how risky the agent judged it. A row runs without approval only when its class is allowed to, its risk is low and its confidence is high enough.">Class · risk</th>
-    <th data-sort="rec">Recommendation</th><th data-sort="host">Host</th>
-    <th title="Where the fix is being handled outside this queue: its pull request, the change record that authorises a host fix, or the issue it was filed as.">Ticket</th><th data-sort="created">Created</th>
+    <th data-sort="class" title="What kind of change the fix is. A row runs without approval only when its class is allowed to, its risk is low and its confidence is high enough.">Class</th>
+    <th data-sort="risk" title="How risky the agent judged the fix.">Risk</th>
+    <th data-sort="rec">Recommendation</th><th data-sort="host">Host</th><th data-sort="created">Created</th>
   </tr></thead>
   <tbody id="rows"></tbody>
   <tbody id="empty" hidden><tr class="empty-row"><td colspan="7" class="empty">No open remediations.</td></tr></tbody>
@@ -121,7 +121,7 @@
 <div id="backdrop" onclick="closeDetail()" aria-hidden="true"></div>
 <!-- A dialog (CFOP-94): inert while closed so its off-screen controls are not in the tab
      order; detail() lifts it, closeDetail() restores it. Labelled by the h2 detail() paints. -->
-<div id="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
+<div id="detail" class="dock" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
 <div id="toasts"></div>
 
 <!-- esc/badge/color/fmtTs/listKit/toast/trapFocus — one copy, see ui/common.js. Not deferred:
@@ -195,6 +195,7 @@ function paint(){
     return textMatch(Q, ['#'+r.id, r.status, r.remediation_class, r.risk, r.host_id, p.provider,
       p.recommendation, p.title, r.tracker_key, r.pr_url, r.named_pr_url]); });
   render(KIT.sort(rows));
+  markOpen();  // the repaint replaced the rows; the open one is still open
 }
 
 // The lifecycle strip: every stage in the order a row moves through it, then
@@ -237,8 +238,6 @@ function refocusRow(id){ if(!id) return; const el=document.getElementById(id); i
 const TERMINAL = new Set(['resolved', 'rejected']);
 function rowHtml(r){
   const p = r.payload||{}; const rec = p.recommendation || p.title || '';
-  // The reporting LLM rides under the recommendation; absence means the row
-  // predates the tag, not "unknown", so nothing is drawn for it.
   // pr_url is a PR this row tracks; named_pr_url one its recommendation names
   // (CFOP-116); a node-action also has its change-record PR, whose merge
   // authorises shell on a host (CFOP-139). That last one is what an operator
@@ -257,16 +256,19 @@ function rowHtml(r){
   // a PR-open row has both and the operator wants both.
   const trHref = safeUrl(r.tracker_url);
   const tr = trHref ? `<a href="${esc(trHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="the issue-tracker item this row was handed to">${esc(r.tracker_key||'issue')} ↗</a>` : '';
-  const prCell = tr ? (pr==='—' ? tr : `${pr} · ${tr}`) : pr;
-  const under = [p.provider?esc(p.provider):'', r.confidence==null?'':'conf '+esc(r.confidence)].filter(Boolean).join(' · ');
+  // The small print under the recommendation: what kind of change, where,
+  // who wrote it and how sure, and where it is being handled. The reporting
+  // LLM's absence means the row predates the tag, not "unknown", so nothing
+  // is drawn for it.
+  const meta = [`<span${glossAttr('class',r.remediation_class)}>${esc(r.remediation_class)}</span>`,
+    r.host_id?esc(r.host_id):'', p.provider?esc(p.provider):'', r.confidence==null?'':'conf '+esc(r.confidence),
+    pr==='—'?'':pr, tr].filter(Boolean).join(' · ');
   return `<tr id="row-${r.id}" tabindex="0" onclick="detail(${r.id})" onkeydown="rowKey(event,${r.id})">
-    <td class="mono muted">#${r.id}</td>
-    <td>${badge(r.status, SC[r.status]||'--text-muted', gloss('remediation',r.status))}</td>
-    <td><span class="cls"><span class="mono"${glossAttr('class',r.remediation_class)}>${esc(r.remediation_class)}</span>${badge((r.risk||'—')+' risk', RC[r.risk]||'--text-muted')}</span></td>
-    <td class="rec"><span class="t">${esc(String(rec).slice(0,240))}</span>${under?`<span class="sub">${under}</span>`:''}</td>
-    <td class="mono host" title="${esc(r.host_id)}">${esc(r.host_id)}</td>
-    <td class="mono" style="white-space:nowrap">${prCell}</td>
-    <td class="mono muted">${fmtTs(r.created_at)}</td></tr>`;
+    <td class="id mono">#${r.id}</td>
+    <td class="oc">${badge(r.status, SC[r.status]||'--text-muted', gloss('remediation',r.status))}${badge((r.risk||'—')+' risk', RC[r.risk]||'--text-muted')}</td>
+    <td class="when mono">${fmtTs(r.created_at)}</td>
+    <td class="trig"><span class="t">${esc(String(rec).slice(0,240))||'—'}</span></td>
+    <td class="meta mono">${meta}</td></tr>`;
 }
 // Three buckets (CFOP-170): active, filed, closed. A filed row was handed to
 // the issue tracker — it is noted here with its key, and it is not a line item
@@ -300,7 +302,18 @@ function closeDetail(){
   d.classList.remove('open'); d.inert = true;
   document.getElementById('backdrop').classList.remove('open');
   OPEN = null;
+  history.replaceState(null,'',location.pathname+location.search);
+  markOpen();
   restoreFocus();
+}
+// The open row carries aria-current (markOpenRow in common.js).
+function markOpen(){ markOpenRow(OPEN); }
+// Docking narrows the page and folds the pipeline away, so the row that was
+// clicked is no longer where the pointer is. Bring it back into view.
+function revealOpenRow(){
+  if(OPEN===null || !docked()) return;
+  const tr = document.getElementById('row-'+OPEN);
+  if(tr && tr.scrollIntoView) tr.scrollIntoView({block:'nearest'});
 }
 function restoreFocus(){
   const o = OPENER; OPENER = null; if(!o) return;
@@ -309,8 +322,10 @@ function restoreFocus(){
   if(t && t.focus) t.focus();
 }
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDetail(); });
-// Tab stays inside the open drawer (CFOP-95).
+// Tab stays inside the open drawer (CFOP-95), unless it is docked beside the
+// list and so not modal (CFOP-738): trapFocus() reads aria-modal.
 trapFocus(document.getElementById('detail'));
+applyMax();
 // The attach line's copy icon (CFOP-113) — one delegated listener, see common.js.
 bindCopyIcons(document);
 
@@ -327,7 +342,13 @@ async function detail(id){
   // be painted over.
   if(OPEN===null) OPENER = document.activeElement || null;
   d.classList.add('open'); d.inert = false; document.getElementById('backdrop').classList.add('open');
-  OPEN = id;
+  // The open row names itself in the URL, as on Investigations (CFOP-73):
+  // /remediations#583 is what you paste to someone and what a reload comes
+  // back to. replaceState, so glancing at rows does not fill the back button
+  // and no hashchange re-enters this function.
+  const first = OPEN!==id;
+  OPEN = id; history.replaceState(null,'','#'+id); applyModal(); markOpen();
+  if(first) revealOpenRow();
   let r; try { r = await (await fetch('/api/remediations/'+id)).json(); } catch(e){
     if(OPEN===id){ d.innerHTML='<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button><span class="muted">error loading #'+id+'</span>'; focusDetailClose(); } return; }
   // Two clicks in quick succession race: a slow response for the row you left
@@ -346,7 +367,7 @@ async function detail(id){
       <h2 id="detail-title">${esc(title)}${copyIcon('remediation title',{text:title+(rec?' — '+rec:'')})}</h2>
       ${badge(r.status,SC[r.status]||'--text-muted',gloss('remediation',r.status))}
       ${r.risk?badge(r.risk+' risk',RC[r.risk]||'--text-muted'):''}
-      <span class="end"><button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button></span>
+      <span class="end">${maxButton()}<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button></span>
     </div>
     <div class="p-meta">
       <span><b>class</b> <span class="mono v"${glossAttr('class',r.remediation_class)}>${esc(r.remediation_class)}</span></span>
@@ -367,6 +388,7 @@ async function detail(id){
     ${changeRecordHtml(r)}
     ${blockedCommandsHtml(r)}
     ${foldsHtml(p)}</div>`;
+  applyMax(); applyModal(); markOpen();
   focusDetailClose();
 }
 

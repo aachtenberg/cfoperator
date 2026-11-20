@@ -288,6 +288,68 @@ td .sub { display:block; margin-top:4px; font-family:var(--font-mono); font-size
 .cmd { background:var(--bg-tertiary); border:1px solid var(--border-subtle); border-radius:var(--radius-xs);
   padding:2px 6px; user-select:all; font-size:12px; }
 
+/* ---- a list of items (CFOP-696) --------------------------------------------
+   A list card with class="items": rows are items, not a grid of columns. An
+   id, its state and a time on one line, the sentence under it, then the small
+   print. It is still the one <table>, laid out as blocks: listKit sorts by its
+   headers, which become a strip of sort buttons. Investigations had this to
+   itself; Remediations takes it so its list fits beside a docked pane
+   (CFOP-738). A page names its cells id / oc / when / trig / meta. */
+.items table, .items tbody, .items thead { display:block; }
+.items > table { min-width:0; }
+.items thead tr { display:flex; flex-wrap:wrap; align-items:center; gap:2px 14px; padding:8px 16px;
+  border-bottom:1px solid var(--border-subtle); }
+.items thead tr::before { content:'Sort'; font-size:12px; color:var(--text-dim); }
+.items th { position:static; padding:0; border:0; background:none; }
+.items tbody tr { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:6px 8px; align-items:center;
+  grid-template-areas:"id oc when" "trig trig trig" "meta meta meta";
+  padding:12px 16px 12px 14px; border-bottom:1px solid var(--border-faint); border-left:2px solid transparent; }
+.items tbody tr:last-child { border-bottom:0; }
+.items td { display:block; padding:0; border:0; min-width:0; }
+.items td.id { grid-area:id; font-size:12px; color:var(--text-muted); }
+.items td.oc { grid-area:oc; display:flex; flex-wrap:wrap; gap:6px; }
+.items td.when { grid-area:when; font-size:12px; color:var(--text-muted); }
+.items td.trig { grid-area:trig; font-size:14px; font-weight:500; line-height:1.4; overflow-wrap:anywhere; }
+.items td.meta { grid-area:meta; font-size:12px; color:var(--text-muted); overflow-wrap:anywhere; }
+.items td.meta a { white-space:nowrap; }
+/* The open row: a surface and a rule, and aria-current for anyone not seeing either. */
+.items tbody tr[aria-current="true"] { background:#151522; border-left-color:var(--accent); }
+/* A row that is not an item: a heading between buckets, or "nothing here". */
+.items tbody tr.divider, .items tbody tr.empty-row { display:block; padding:0; border-left:0; }
+.items td.empty { padding:32px 16px; }
+.list-head { display:flex; flex-direction:column; gap:12px; padding:14px 16px 12px; border-bottom:1px solid var(--border-subtle); }
+.list-head input[type="search"] { width:100%; min-height:40px; }
+
+/* ---- the dock (CFOP-696) ---------------------------------------------------
+   A drawer with class="dock". Wide enough (DOCK_MQ in common.js is this same
+   width), an open row sits beside the list instead of over it: no backdrop,
+   no shadow, and not modal. common.js lowers aria-modal to match, and
+   trapFocus() lets Tab leave a dialog that says it is not modal. Narrower, or
+   maximized, it is the drawer every other page has. */
+#detail.dock { padding:20px 24px 96px; }
+#detail.dock.wide { width:min(1100px,96vw); }
+@media (min-width: 1280px) {
+  :root { --list-w:clamp(380px, 32vw, 520px); }
+  body:has(#detail.dock) #backdrop { display:none; }
+  #detail.dock { left:calc(var(--rail-w) + var(--list-w)); width:auto; box-shadow:none; background:var(--bg-primary);
+    border-left:1px solid var(--border-subtle); transition:none; padding:20px 28px 96px; }
+  /* A terminal wants 80 columns: the pane takes the list's room while one is open. */
+  #detail.dock.wide { left:var(--rail-w); width:auto; }
+  body:has(#detail.dock.open) header, body:has(#detail.dock.open) main.page { max-width:var(--list-w); padding-left:16px; padding-right:16px; }
+  /* Beside a docked pane the column is the list: what a page marks
+     .dock-fold (the pipeline switches, the lifecycle counts) folds away
+     until the pane is closed. */
+  body:has(#detail.dock.open) .dock-fold { display:none; }
+  /* Docked, the pane is not a layer over the page, so the Ask button is not under it. */
+  body:has(#detail.dock) .cfop-ask { z-index:55; }
+  body:has(#detail.max) .cfop-ask, body:has(#detail.wide) .cfop-ask { display:none; }
+}
+/* Maximized (CFOP-113): the whole viewport, rail included. Wins over .wide
+   and over the dock (so it follows both, at their specificity); the class is
+   on #detail, which repaints its contents but is never itself replaced. */
+#detail.dock.max { left:0; width:100vw; background:var(--bg-secondary); }
+#detail.max .pcard, #detail.max .p-actions { background:var(--bg-primary); }
+
 /* ---- the pane (CFOP-414) ---------------------------------------------------
    What a drawer holds, once: a head, a meta line, one action bar, cards, and
    the long things folded. Investigations had this to itself (CFOP-696) and
