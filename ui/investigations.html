@@ -359,16 +359,22 @@ async function detail(id, opts){
       ${f.host?`<span><b>host</b> <span class="mono v">${esc(f.host)}</span></span>`:''}
       ${eventLine(r)}
     </div>
-    ${actionBar(r)}
-    <div id="explain"></div>
-    <div id="cockpit"></div>
-    ${recommendationBlock(f, r)}
-    <div class="pgrid">${triageBlock(r)}${similarBlock(f)}</div>
-    ${sessionsBlock(r)}
-    <div class="pcard fold">
-      ${reportBlock(f)}
-      <details><summary>Raw findings${copyIcon('raw findings',{from:'raw-findings'})}</summary>
-        <pre id="raw-findings">${esc(JSON.stringify(f,null,2))}</pre></details>
+    <div class="p-cols">
+      <div class="p-main">
+        ${actionBar(r)}
+        <div id="explain"></div>
+        <div id="cockpit"></div>
+        ${recommendationBlock(f, r)}
+      </div>
+      <div class="pgrid p-side">${triageBlock(r)}${similarBlock(f)}</div>
+      <div class="p-rest">
+        ${sessionsBlock(r)}
+        <div class="pcard fold">
+          ${reportBlock(f)}
+          <details><summary>Raw findings${copyIcon('raw findings',{from:'raw-findings'})}</summary>
+            <pre id="raw-findings">${esc(JSON.stringify(f,null,2))}</pre></details>
+        </div>
+      </div>
     </div></div>`;
   applyMax(); applyModal(); markOpen();
   focusDetailClose();

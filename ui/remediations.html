@@ -377,17 +377,23 @@ async function detail(id){
       <span><b>created</b> <span class="v">${fmtTs(r.created_at,{seconds:true})}</span></span>
       <span title="How many times an executor has been started on this row. At the attempt cap it is parked as needs-human."><span class="v">${Number(r.attempts)||0}</span> attempts</span>
     </div>
-    ${actionBar(r)}
-    <section class="pcard" aria-label="Recommendation"><div class="hd"><h3>Recommendation${rec?copyIcon('recommendation',{from:'rec-text'}):''}</h3></div><div class="bd">
-      ${rec?`<p class="rec" id="rec-text">${esc(rec)}</p>`:`<p class="muted">This row carries no recommendation.</p>`}
-      ${fixHtml(p,{risk:false})}</div></section>
-    ${decision||tracking?`<div class="pgrid">
-      ${decision?`<section class="pcard" aria-label="Decision"><div class="hd"><h3>Decision</h3></div><div class="bd">${decision}</div></section>`:''}
-      ${tracking?`<section class="pcard" aria-label="Tracking"><div class="hd"><h3>Tracking</h3></div><div class="bd">${tracking}</div></section>`:''}
-    </div>`:''}
-    ${changeRecordHtml(r)}
-    ${blockedCommandsHtml(r)}
-    ${foldsHtml(p)}</div>`;
+    <div class="p-cols">
+      <div class="p-main">
+        ${actionBar(r)}
+        <section class="pcard" aria-label="Recommendation"><div class="hd"><h3>Recommendation${rec?copyIcon('recommendation',{from:'rec-text'}):''}</h3></div><div class="bd">
+          ${rec?`<p class="rec" id="rec-text">${esc(rec)}</p>`:`<p class="muted">This row carries no recommendation.</p>`}
+          ${fixHtml(p,{risk:false})}</div></section>
+      </div>
+      ${decision||tracking?`<div class="pgrid p-side">
+        ${decision?`<section class="pcard" aria-label="Decision"><div class="hd"><h3>Decision</h3></div><div class="bd">${decision}</div></section>`:''}
+        ${tracking?`<section class="pcard" aria-label="Tracking"><div class="hd"><h3>Tracking</h3></div><div class="bd">${tracking}</div></section>`:''}
+      </div>`:''}
+      <div class="p-rest">
+        ${changeRecordHtml(r)}
+        ${blockedCommandsHtml(r)}
+        ${foldsHtml(p)}
+      </div>
+    </div></div>`;
   applyMax(); applyModal(); markOpen();
   focusDetailClose();
 }

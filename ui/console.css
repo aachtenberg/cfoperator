@@ -356,8 +356,29 @@ td .sub { display:block; margin-top:4px; font-family:var(--font-mono); font-size
    Remediations was a stack of label lines; two drawers that show the same
    recommendation should not be two layouts. The page keeps what is its own:
    how wide the drawer is and whether it docks. */
-.pane { display:flex; flex-direction:column; gap:16px; max-width:980px; }
-.pane > * { margin:0; }
+.pane { display:flex; flex-direction:column; gap:16px; max-width:1180px; }
+.pane > *, .p-main > *, .p-rest > * { margin:0; }
+/* The pane on a wide screen (CFOP-739). Under the head, a pane is three
+   groups in reading order: .p-main (the action bar and the recommendation),
+   .p-side (the facts cards, which is the .pgrid) and .p-rest (the folded
+   things). Stacked, that is the order they are written in. Given the room,
+   the facts stand beside the other two instead of a screen's width going
+   empty. The pane's own width decides, not the viewport's: one screen shows
+   it docked, maximized, and over the list while a terminal is open. The
+   second row is the flexible one, so a tall facts column lengthens the gap
+   under the folds, not the one between the cards on the left. */
+.p-cols, .p-main, .p-rest { display:flex; flex-direction:column; gap:16px; min-width:0; }
+#detail.dock { container:pane / inline-size; }
+@container pane (min-width: 1180px) {
+  .pane:has(.p-side) { max-width:1640px; }
+  .p-cols:has(> .p-side) { display:grid; grid-template-columns:minmax(0, 1fr) clamp(340px, 30%, 460px);
+    grid-template-rows:auto 1fr; gap:16px; align-items:start; }
+  .p-cols > .p-main { grid-column:1; grid-row:1; }
+  .p-cols > .p-rest { grid-column:1; grid-row:2; }
+  .p-cols > .p-side { grid-column:2; grid-row:1 / span 2; grid-template-columns:minmax(0, 1fr); }
+}
+/* Maximized on a screen wider than the pane gets: in the middle, not hung on the left. */
+#detail.max .pane { margin-inline:auto; }
 .p-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
 .p-head h2 { margin:0 !important; font-size:22px !important; }
 .p-head .end { margin-left:auto; display:flex; align-items:center; gap:4px; }
