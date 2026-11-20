@@ -301,7 +301,8 @@ of them are needed to investigate your first alert.
 | `/api/sweep` | Trigger deep system sweep (POST) |
 | `/api/config/reload` | Hot-reload config (POST) |
 | `/api/models/<backend>` | List the models a backend offers (`ollama`, or a hosted provider with a key) |
-| `/api/models/<backend>/select` | Persist the model for a backend and make that backend the default (POST, admin) |
+| `/api/models/<backend>/select` | Persist the model for a backend and make that backend the default; with `"default": false`, persist the model and leave the selection alone (POST, admin) |
+| `/api/settings/llm_chain` | The default provider chain as the agent walks it: each rung's model, and why a rung is skipped |
 | `/api/qa` | GET pending investigation questions; POST `{question_id, answer}` to answer one |
 | `/v1/investigate` | POST — async investigation entry point called by event_runtime |
 | `/v1/triage` | POST — synchronous triage decision (log_only/notify/investigate/escalate) |

@@ -326,6 +326,24 @@ _JUDGE_DEFAULT_ORDER = ('deepseek', 'anthropic', 'xai', 'gemini')
 # config over the chain default. Triage (one Ollama model, CFOP-58) and the
 # judge (one model per backend over a floor, CFOP-121) keep their own keys;
 # the console's scope table reads all of them through one endpoint.
+# The order the provider walk falls back in, behind whichever backend heads
+# it: ollama -> groq -> xai -> anthropic -> openrouter. One constant because
+# two things read it: _get_provider_chain, which walks it, and
+# _default_chain_view, which draws it in Admin -> LLM (CFOP-737). A page that
+# carried its own copy would go on drawing an order the agent had stopped using.
+# OpenRouter is the LAST rung (CFOP-259), after Anthropic, so it only changes
+# the outcome when every rung above it has failed; before it, that
+# investigation simply failed. Behind it is deepseek-v4-pro at roughly a cent
+# per investigation.
+# Gemini (and DeepSeek, for the same reason) is deliberately ABSENT even
+# though it is a registered provider and selectable by name. Adding it would
+# have put it between xAI and Anthropic for every INVESTIGATION fallback, so a
+# paid escalation that used to reach Opus would reach whatever the config's
+# gemini entry names instead. That is a quality change to the investigation
+# path, not the judge-gate change this was; the judge reaches Gemini through
+# _JUDGE_MODEL_FLOOR, which pins its own model.
+LLM_FALLBACK_ORDER = ('ollama', 'groq', 'xai', 'anthropic', 'openrouter')
+
 LLM_SCOPES = {
     'sweep': {'label': 'Sweeps', 'hint': 'the scheduled sweep phases (unattended, tool loop)'},
     'summary': {'label': 'Morning summary', 'hint': 'the daily summary (unattended, tool loop)'},
@@ -1984,7 +2002,7 @@ OPENAI_COMPAT_PROVIDERS = {
     # config.yaml, config.yaml.example ("Shipped providers: ... gemini ...")
     # and docs/config-reference.md have all named gemini as supported, but it
     # existed in NO code path — not here, not in _get_provider_chain's
-    # fallback_order, not in _resolve_provider's accepted backends. A gemini
+    # LLM_FALLBACK_ORDER, not in _resolve_provider's accepted backends. A gemini
     # entry in the chain was silently inert. Registered here because Google
     # ships an OpenAI-compatible surface, so it needs no branch of its own.
     'gemini': {
@@ -2067,7 +2085,7 @@ OPENAI_COMPAT_PROVIDERS = {
     # (CFOP-134). reasoning_effort goes to whatever model is selected here,
     # not just the default; sent with it, claude-haiku-4.5, gpt-5.4-nano and
     # grok-4.5 all answered 200 (2026-10-03). The last rung of
-    # _get_provider_chain's fallback_order.
+    # LLM_FALLBACK_ORDER.
     'openrouter': {
         'label': 'OpenRouter',
         'base_url': 'https://openrouter.ai/api/v1',
@@ -11123,23 +11141,9 @@ Only return the JSON array, no other text."""
         if allow_fallback == 'false':
             return providers
 
-        # Define fallback order: ollama -> groq -> xai -> anthropic -> openrouter
-        # OpenRouter is the LAST rung (CFOP-259), after Anthropic, so it only
-        # changes the outcome when every rung above it has failed — before it,
-        # that investigation simply failed. Behind it is deepseek-v4-pro at
-        # roughly a cent per investigation.
-        # Gemini (and DeepSeek, for the same reason) is deliberately ABSENT
-        # here even though it is a registered provider and selectable by name. Adding it would have put it between
-        # xAI and Anthropic for every INVESTIGATION fallback, so a paid
-        # escalation that used to reach Opus would reach whatever the config's
-        # gemini entry names instead. That is a quality change to the
-        # investigation path, not the judge-gate change this was; the judge
-        # reaches Gemini through _JUDGE_MODEL_FLOOR, which pins its own model.
-        fallback_order = ['ollama', 'groq', 'xai', 'anthropic', 'openrouter']
-
-        # Add other providers as fallbacks (skip the primary)
+        # Add other providers as fallbacks, in LLM_FALLBACK_ORDER (skip the primary)
         primary_type = primary[0] if primary else None
-        for fb_type in fallback_order:
+        for fb_type in LLM_FALLBACK_ORDER:
             if fb_type == primary_type:
                 continue  # Skip primary - already added
 
@@ -11151,6 +11155,61 @@ Only return the JSON array, no other text."""
                 providers.append(fb_provider)
 
         return providers
+
+    def _default_chain_view(self) -> Dict[str, Any]:
+        """The default chain as Admin -> LLM draws it (CFOP-737).
+
+        What ``_get_provider_chain('auto')`` walks, kept as a picture: every
+        rung in order with the model it would call, and the rungs the walk
+        would leave out with the reason ('no key', 'no model'), because a
+        rung that silently is not there is the thing the page exists to
+        show. ``manual`` is every registered backend that is never a
+        fallback and only runs when something names it.
+
+        It reads settings and config and resolves nothing: no request, and
+        no trip through the cooldown manager. With no backend selected the
+        walk's head is whatever that manager hands out, which is Ollama
+        unless it is cooling down, so the fixed order is what is drawn.
+        A settings read that fails draws the config's chain, not an error:
+        the page is most needed when something is down.
+        """
+        def setting(key: str, default: str = '') -> str:
+            try:
+                return str(self.kb.get_setting(key, default) or '')
+            except Exception as e:
+                logger.debug(f"Could not read {key} for the chain view: {e}")
+                return default
+
+        known = ('ollama', 'anthropic', *OPENAI_COMPAT_PROVIDERS)
+        selected = setting('selected_backend').strip().lower()
+        if selected not in known:
+            selected = ''
+        order = ([selected] if selected else []) + [b for b in LLM_FALLBACK_ORDER if b != selected]
+
+        def rung(backend: str) -> Dict[str, str]:
+            if backend == 'ollama':
+                primary = self.config.get('llm', {}).get('primary', {})
+                model = setting('ollama_selected_model') or str(primary.get('model') or '')
+                return {'backend': backend, 'model': model, 'skip': ''}
+            model, skip = '', ''
+            try:
+                model = self._configured_model_for(backend)
+                if not self.provider_api_key(backend):
+                    skip = 'no key'
+                elif not model:
+                    skip = 'no model'
+            except Exception as e:
+                logger.debug(f"Could not resolve {backend} for the chain view: {e}")
+                skip = 'unknown'
+            return {'backend': backend, 'model': model, 'skip': skip}
+
+        return {
+            'selected': selected,
+            # The same read, with the same default, as _get_provider_chain.
+            'fallback': setting('allow_paid_escalation', 'true') != 'false',
+            'rungs': [rung(b) for b in order],
+            'manual': [rung(b) for b in known if b not in order],
+        }
 
     def _resolve_provider(self, backend: str = 'auto', model: str = None):
         """

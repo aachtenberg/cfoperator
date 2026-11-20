@@ -3158,21 +3158,24 @@ def test_reaper_no_longer_drives_the_recovery_sweep():
 
 def test_gemini_is_not_in_the_investigation_fallback_chain():
     # Registering gemini so the judge can reach it must not silently reroute
-    # INVESTIGATION escalation: adding it to fallback_order would put it between
-    # xAI and Anthropic, so a paid escalation that used to reach Opus would
-    # reach whatever the config's gemini entry names instead.
+    # INVESTIGATION escalation: adding it to the fallback order would put it
+    # between xAI and Anthropic, so a paid escalation that used to reach Opus
+    # would reach whatever the config's gemini entry names instead.
+    # The order is LLM_FALLBACK_ORDER since CFOP-737 (the walk and the Admin
+    # page's picture of it read the one constant), so this reads the value
+    # the walk uses instead of a line of its source.
     import inspect
-    src = inspect.getsource(CFOperator._get_provider_chain)
-    line = next(l for l in src.splitlines() if "fallback_order = [" in l)
-    assert "gemini" not in line, line
+    order = list(agent_mod.LLM_FALLBACK_ORDER)
+    assert "LLM_FALLBACK_ORDER" in inspect.getsource(CFOperator._get_provider_chain), (
+        "the provider walk no longer falls back in LLM_FALLBACK_ORDER; this guard is reading the wrong thing")
+    assert "gemini" not in order, order
     # DeepSeek, same decision (CFOP-110): registered and selectable, never an
     # automatic escalate.
-    assert "deepseek" not in line, line
-    assert "anthropic" in line and "xai" in line
+    assert "deepseek" not in order, order
+    assert "anthropic" in order and "xai" in order
     # OpenRouter IS in the chain (CFOP-259), and only after Anthropic: it is
     # the rung for "every other rung failed", never a substitute for Opus.
-    order = line.split("[", 1)[1]
-    assert "openrouter" in order and order.index("openrouter") > order.index("anthropic"), line
+    assert "openrouter" in order and order.index("openrouter") > order.index("anthropic"), order
     # ...but they ARE registered providers, so the judge and the admin picker
     # can still select them by name
     assert "gemini" in agent_mod.OPENAI_COMPAT_PROVIDERS

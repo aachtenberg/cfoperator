@@ -856,20 +856,30 @@ class WebServer:
         @require_role(ROLE_ADMIN)
         def select_model(backend):
             """Persist the user's model selection for a backend AND set as default provider."""
-            data = request.json
+            data = request.json or {}
             model_name = _normalize_model_id(backend, data.get('model', ''))
             setting_key = f'{backend}_selected_model'
+            # "default": false saves the model this backend answers with and
+            # leaves the selection where it is (CFOP-737). Admin -> LLM draws
+            # the whole chain with a picker on every rung, and without this
+            # choosing rung 2's model would make rung 2 the head. Omitted, it
+            # is the old behaviour: the backend becomes the selection.
+            make_default = data.get('default', True) is not False
             try:
                 # Save model selection for this backend
                 self.operator.kb.set_setting(setting_key, model_name)
-                # Also set this backend as the system-wide default provider
-                self.operator.kb.set_setting('selected_backend', backend)
-                logger.info(f"Set default provider to {backend}/{model_name}")
+                if make_default:
+                    # Also set this backend as the system-wide default provider
+                    self.operator.kb.set_setting('selected_backend', backend)
+                    logger.info(f"Set default provider to {backend}/{model_name}")
+                else:
+                    logger.info(f"Set {backend}'s model to {model_name}; the selection is unchanged")
             except Exception as e:
                 # Never a 200 for a write that did not happen (CFOP-122).
                 logger.warning(f"Could not persist {backend} model selection (DB down?): {e}")
                 return jsonify({'error': 'not saved: the database is unavailable'}), 503
-            return jsonify({'success': True, 'backend': backend, 'model': model_name})
+            return jsonify({'success': True, 'backend': backend, 'model': model_name,
+                            'default': make_default})
 
         @self.app.route('/api/settings/provider')
         def get_selected_provider():
@@ -1204,6 +1214,14 @@ class WebServer:
                            'model': _scope_setting(f'{scope}_model')},
                     'config': cfg,
                 })
+            # Not a seat anyone can move: an investigation always walks the
+            # default chain. Listed so the page that draws the flow is not
+            # the one place that knows this step exists (CFOP-737).
+            rows.append({
+                'scope': 'investigate', 'label': 'Investigation', 'kind': 'default', 'editable': False,
+                'hint': 'the tool loop behind an alert; always the default chain',
+                'effective': {'backend': 'auto', 'model': ''}, 'source': 'default',
+            })
             tcfg = self.operator.config.get('llm', {}) if isinstance(self.operator.config, dict) else {}
             triage_db = _scope_setting('triage_model')
             rows.append({
@@ -1251,6 +1269,25 @@ class WebServer:
                 return
             store.record(EVENT_LLM_SCOPE, actor=_actor(), target=scope,
                          source_ip=request.remote_addr, **detail)
+
+        # The default chain, drawn (CFOP-737): every rung in the order the
+        # agent walks, the model each would call, and why a rung would be
+        # skipped. Built by the agent from the constant its own walk uses,
+        # so the page cannot show an order the agent does not follow.
+        @self.app.route('/api/settings/llm_chain')
+        def get_llm_chain():
+            try:
+                view = self.operator._default_chain_view()
+            except Exception as e:
+                logger.error(f"get llm chain failed: {e}")
+                return jsonify({'error': 'could not read the default chain'}), 500
+            labels = {'ollama': 'Ollama', 'anthropic': 'Anthropic',
+                      **{b: cfg['label'] for b, cfg in _openai_compat_providers().items()}}
+
+            def labelled(rungs):
+                return [{**r, 'label': labels.get(r['backend'], r['backend'])} for r in rungs]
+            return jsonify({'selected': view['selected'], 'fallback': view['fallback'],
+                            'rungs': labelled(view['rungs']), 'manual': labelled(view['manual'])})
 
         @self.app.route('/api/settings/llm_scopes')
         def get_llm_scopes():
@@ -1373,13 +1410,17 @@ class WebServer:
         @self.app.route('/api/settings/fallback', methods=['POST'])
         @require_role(ROLE_ADMIN)
         def set_fallback_settings():
-            """Toggle paid LLM fallback."""
-            data = request.json
+            """Toggle LLM fallback: off, the provider walk is its head alone."""
+            data = request.json or {}
             enabled = bool(data.get('allow_paid_escalation', False))
             try:
                 self.operator.kb.set_setting('allow_paid_escalation', 'true' if enabled else 'false')
             except Exception as e:
-                logger.warning(f"Could not persist fallback setting: {e}")
+                # Never a 200 for a write that did not happen (CFOP-122). This
+                # one said success; the switch then snapped back on the next
+                # read with nothing to say why.
+                logger.warning(f"Could not persist fallback setting (DB down?): {e}")
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
             return jsonify({'success': True, 'allow_paid_escalation': enabled})
 
         # ── Linked repo registry (CFOP-77) ──

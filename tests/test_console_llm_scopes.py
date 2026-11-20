@@ -117,6 +117,7 @@ def test_a_failed_write_is_never_a_success_here_or_on_the_older_endpoints(server
             ('post', '/api/settings/provider', {'backend': 'groq'}),
             ('post', '/api/models/groq/select', {'model': 'llama-3.3-70b'}),
             ('post', '/api/settings/max_tool_iterations', {'max_tool_iterations': 12}),
+            ('post', '/api/settings/fallback', {'allow_paid_escalation': False}),
     ):
         resp = getattr(c, method)(path, json=body)
         assert resp.status_code == 503, (method, path, resp.status_code)

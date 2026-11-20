@@ -23,7 +23,6 @@
     font-family:var(--font-mono); font-size:12px; text-transform:uppercase;
     letter-spacing:.06em; color:var(--text-secondary); }
   .section { padding:0 32px; }
-  .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px; padding:0 32px; }
   tbody tr.inactive td { opacity:.55; }
   tbody tr.dead td { opacity:.5; }
   tbody tr.dead td.label { text-decoration:line-through; }
@@ -41,9 +40,6 @@
     padding:14px 16px; }
   .card h3 { margin:0 0 10px; font-family:var(--font-mono); font-size:13px;
     text-transform:uppercase; letter-spacing:.04em; color:var(--text-secondary); }
-  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; }
-  .field label { color:var(--text-secondary); font-size:12px; }
-  .field-row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
   .toggle-switch { position:relative; display:inline-block; width:36px; height:20px; }
   .toggle-switch input { opacity:0; width:0; height:0; }
   .toggle-slider { position:absolute; cursor:pointer; inset:0; background:var(--bg-tertiary);
@@ -56,6 +52,97 @@
   .eff-row { display:flex; justify-content:space-between; gap:12px; padding:6px 0;
     border-bottom:1px solid var(--border-subtle); font-size:13px; }
   .eff-row:last-child { border-bottom:none; }
+
+  /* LLM tab (CFOP-737): the flow, drawn, with the model picker on the step it
+     changes. Green is "Default" everywhere on the tab: the chain's card, a
+     step that takes it, and the chip that says a step falls back to it. */
+  .llm { display:flex; flex-direction:column; gap:28px; padding:20px 32px 0; max-width:1264px; }
+  .llm > div, .steps-card > div { min-width:0; }
+  .llm-h { margin:0 0 8px; font-family:var(--font-mono); font-size:11px; font-weight:500;
+    letter-spacing:.08em; text-transform:uppercase; color:var(--text-secondary); }
+  .llm select { min-height:40px; min-width:0; font-family:var(--font-mono); font-size:12px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--accent); flex:none; }
+  .dot.off { background:transparent; box-shadow:inset 0 0 0 1px var(--text-muted); }
+  .dot.warn { background:var(--orange); }
+  .arrow { display:inline-flex; align-items:center; justify-content:center; flex:none; color:var(--text-muted); }
+  .arrow svg { width:20px; height:20px; }
+
+  /* Default: the chain, first to last. */
+  .chain { display:flex; flex-direction:column; gap:14px; padding:18px; border:1px solid var(--accent-dim);
+    border-radius:12px; background:color-mix(in srgb, var(--accent) 7%, var(--bg-primary)); }
+  .chain-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; }
+  .chain-head h2 { margin:0; display:flex; align-items:center; gap:8px; font-size:16px; font-weight:600; }
+  .chain-head .dot { width:10px; height:10px; }
+  .chain-sw { display:flex; align-items:center; gap:8px; font-size:13px; }
+  .rungs { display:flex; flex-wrap:wrap; align-items:stretch; gap:8px; }
+  .rungs .arrow { flex:0 0 24px; }
+  .rung { flex:1 1 170px; min-width:0; display:flex; flex-direction:column; gap:8px; padding:14px;
+    border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-secondary); }
+  .rung.head { border-color:var(--accent); }
+  .rung-top { display:flex; align-items:center; gap:8px; min-height:32px; font-weight:600; }
+  .rung-n { display:inline-flex; align-items:center; justify-content:center; flex:none; width:24px; height:24px;
+    border-radius:var(--radius-xs); border:1px solid var(--border); background:var(--bg-tertiary);
+    color:var(--text-secondary); font-size:13px; }
+  .rung.head .rung-n { background:var(--accent); border-color:var(--accent); color:var(--on-accent); font-weight:700; }
+  .rung-top select { flex:1; min-height:32px; font-family:var(--font-ui); font-size:14px; font-weight:600; }
+  .rung-skip { margin-left:auto; font-family:var(--font-mono); font-size:11px; font-weight:400; color:var(--orange); white-space:nowrap; }
+  /* Not walked: a rung with no key or no model, and every rung after the
+     first while Fallback is off. Said with the border and the number, not by
+     fading the text. */
+  .rung.skip, .rungs.off .rung:not(.head) { border-style:dashed; }
+  .rungs.off .arrow { opacity:.35; }
+
+  /* The steps. A rail down the left when the steps follow one another. */
+  .steps-card { display:flex; flex-direction:column; gap:28px; }
+  .step { display:grid; grid-template-columns:28px minmax(0,1fr); }
+  .step-rail { position:relative; }
+  .rail .step-rail::before, .rail .pill-row::before { content:''; position:absolute; left:13px; top:0; bottom:0;
+    width:2px; background:var(--border); }
+  .rail .pill-row.first::before { top:50%; }
+  .rail .pill-row.last::before { bottom:50%; }
+  .step-rail i { position:absolute; left:6px; top:50%; margin-top:-8px; box-sizing:border-box; width:16px; height:16px;
+    border-radius:50%; background:var(--text-primary); border:3px solid var(--bg-primary); }
+  .step.is-default .step-rail i { background:var(--accent); }
+  .step.is-locked .step-rail i { background:var(--bg-primary); border:2px solid var(--text-muted); }
+  .step-body { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:10px 0 10px 12px;
+    border-bottom:1px solid var(--border-subtle); }
+  .step-name { flex:0 0 160px; font-size:15px; font-weight:600; }
+  .step .prov { flex:0 0 132px; }
+  .step .model, .step .locked { flex:0 1 340px; }
+  .step.is-default .prov { border-color:var(--accent-dim); background:color-mix(in srgb, var(--accent) 7%, var(--bg-primary)); }
+  .locked { display:inline-flex; align-items:center; gap:8px; min-width:0; min-height:40px; padding:0 10px; box-sizing:border-box;
+    border:1px dashed var(--border); border-radius:var(--radius-sm); font-family:var(--font-mono); font-size:12px;
+    color:var(--text-secondary); overflow-wrap:anywhere; }
+  .locked svg { width:14px; height:14px; flex:none; }
+  .step .locked.is-default { flex:0 0 132px; }
+  .locked.is-default { border-style:solid; border-color:var(--accent-dim); color:var(--text-primary);
+    background:color-mix(in srgb, var(--accent) 7%, var(--bg-primary)); }
+  .then { display:inline-flex; align-items:center; gap:8px; }
+  .pill-default { display:inline-flex; align-items:center; gap:6px; min-height:26px; padding:0 10px; border-radius:13px;
+    border:1px solid var(--accent-dim); background:color-mix(in srgb, var(--accent) 7%, var(--bg-primary));
+    color:var(--accent-hover); font-size:12px; font-weight:600; }
+  .judges { flex:1 1 520px; min-width:0; max-width:880px; display:grid; gap:6px 16px;
+    grid-template-columns:repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
+  .judges label { display:flex; align-items:center; gap:10px; min-width:0; }
+  .judges label span { flex:0 0 88px; font-family:var(--font-mono); font-size:11px; color:var(--text-secondary); }
+  .judges select { flex:1; }
+  /* What a run of steps starts from and ends in: a thing, not a model. */
+  .pill-row { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:6px 0; }
+  .pill { position:relative; display:inline-flex; align-items:center; gap:10px; min-height:32px; padding:0 14px;
+    border:1px dashed var(--text-muted); border-radius:16px; background:var(--bg-primary); font-size:13px; font-weight:600; }
+  .pill.solid { border-style:solid; border-color:var(--border); border-radius:var(--radius-sm); background:var(--bg-secondary); }
+  .pill .mono { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:400; color:var(--text-secondary); }
+  .pill svg { width:14px; height:14px; }
+
+  .keys { display:flex; flex-wrap:wrap; gap:8px; }
+  .key { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-height:44px; padding:4px 8px 4px 12px;
+    border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-secondary); }
+  .key-id { display:inline-flex; align-items:center; gap:10px; font-weight:600; }
+  .key-form { display:inline-flex; flex-wrap:wrap; align-items:center; gap:6px; }
+  .key-form input { width:16em; }
+  .loop { display:flex; flex-wrap:wrap; gap:16px; }
+  .loop input { width:6em; }
+  #pool-card { max-width:520px; }
 
   .banner { margin:0 32px 14px; padding:10px 14px; border-radius:var(--radius-sm);
     border:1px solid var(--border); border-left:3px solid var(--cyan);
@@ -85,7 +172,7 @@
 <nav class="tabs" role="tablist" aria-label="Admin sections">
   <button type="button" class="tab" role="tab" data-tab="users" aria-selected="false" title="Console accounts and their roles.">Users</button>
   <button type="button" class="tab" role="tab" data-tab="tokens" aria-selected="false" title="Every API token on this console, whoever owns it, and what each may do.">Tokens</button>
-  <button type="button" class="tab" role="tab" data-tab="llm" aria-selected="false" title="Which model each job runs on, the provider keys, and the runtime selection.">LLM</button>
+  <button type="button" class="tab" role="tab" data-tab="llm" aria-selected="false" title="Which model each step runs on, the order they fall back in, and the provider keys.">LLM</button>
   <button type="button" class="tab" role="tab" data-tab="allowlist" aria-selected="false" title="The commands a host fix is allowed to run.">Allowlist</button>
   <button type="button" class="tab" role="tab" data-tab="repos" aria-selected="false" title="The repositories the agent may read and open pull requests against.">Repos</button>
   <button type="button" class="tab" role="tab" data-tab="connectors" aria-selected="false" title="MCP servers whose tools the console chat may use.">Connectors</button>
@@ -166,106 +253,59 @@
   <div id="tok-empty" class="empty" hidden>No tokens.</div>
 </section>
 
-<!-- ── LLM ── -->
+<!-- ── LLM ── (CFOP-737)
+     The tab draws what the agent does and puts the model picker on the step
+     it changes: the default chain on top, then every step down a rail in the
+     order things happen. The rows are rendered from the server's reads; only
+     the layout (LLM_FLOW, in the script) lives here. -->
 <section class="panel" id="panel-llm" role="tabpanel">
-  <div class="divider">Effective configuration</div>
-  <div class="section">
-    <p class="muted" style="margin:8px 0 12px">
-      Read-only view of what the agent can use. Provider URLs stay in
-      <code>config.yaml</code>; API keys come from sealed secrets or from
-      <b>Provider keys</b> below — never shown here.
-    </p>
-    <div class="card" id="eff-card">
-      <div class="muted">Loading…</div>
+  <div class="llm">
+    <div class="chain" id="chain-card" role="group" aria-labelledby="chain-h">
+      <div class="chain-head">
+        <h2 id="chain-h"><span class="dot" aria-hidden="true"></span>Default</h2>
+        <div class="chain-sw">
+          <label for="fallback-toggle">Fallback</label>
+          <label class="toggle-switch" title="On: when a model fails, the next one in line is tried.&#10;Off: a failure is final.">
+            <input type="checkbox" id="fallback-toggle" onchange="onFallbackToggle()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="rungs" id="chain-rungs"><div class="muted">Loading…</div></div>
     </div>
-  </div>
 
-  <div class="divider">Runtime selection</div>
-  <div class="grid2">
-    <div class="card">
-      <h3>Provider &amp; model</h3>
-      <div class="field">
-        <label for="llm-backend">Backend</label>
-        <select id="llm-backend"><option value="auto">Auto</option></select>
-      </div>
-      <div class="field">
-        <label for="model-select">Model</label>
-        <select id="model-select"><option value="">—</option></select>
-      </div>
-      <div class="field">
-        <label for="triage-model">Triage model</label>
-        <select id="triage-model" onchange="onTriageModelChange()"
-                title="Dedicated triage classifier (CFOP-57/58). Overrides llm.triage_model live; 'off' disables despite config.">
-          <option value="">(use config)</option>
-        </select>
-      </div>
-      <div class="field-row">
-        <span class="muted">Allow paid LLM fallback</span>
-        <label class="toggle-switch" title="Allow fallback to paid LLM providers">
-          <input type="checkbox" id="fallback-toggle" onchange="onFallbackToggle()">
-          <span class="toggle-slider"></span>
-        </label>
+    <div id="scopes-card" class="steps-card"><div class="muted">Loading…</div></div>
+
+    <div>
+      <h3 class="llm-h">Keys</h3>
+      <div class="keys" id="keys-card"><div class="muted">Loading…</div></div>
+    </div>
+
+    <div>
+      <h3 class="llm-h">Loop</h3>
+      <div class="loop">
+        <label class="fld" for="max-iterations" title="The most tool calls one investigation or chat turn may make.">Tool calls
+          <input type="number" id="max-iterations" min="1" max="50" value="10" onchange="onMaxIterationsChange()"></label>
+        <label class="fld" for="alert-interval" title="How often alerts are polled, in seconds.">Alert check (s)
+          <input type="number" id="alert-interval" min="5" max="300" value="10" onchange="onAlertIntervalChange()"></label>
+        <label class="fld" for="sweep-interval" title="How often a sweep runs, in minutes.">Sweep (min)
+          <input type="number" id="sweep-interval" min="1" max="1440" value="30" onchange="onSweepIntervalChange()"></label>
       </div>
     </div>
-    <div class="card">
-      <h3>OODA</h3>
-      <div class="field">
-        <label for="max-iterations">Max tool calls</label>
-        <input type="number" id="max-iterations" min="1" max="50" value="10" onchange="onMaxIterationsChange()">
-      </div>
-      <div class="field">
-        <label for="alert-interval">Alert interval (seconds)</label>
-        <input type="number" id="alert-interval" min="5" max="300" value="10" onchange="onAlertIntervalChange()">
-      </div>
-      <div class="field">
-        <label for="sweep-interval">Sweep interval (minutes)</label>
-        <input type="number" id="sweep-interval" min="1" max="1440" value="30" onchange="onSweepIntervalChange()">
+
+    <div>
+      <h3 class="llm-h">Ollama pool</h3>
+      <div id="pool-card">
+        <div class="muted" id="pool-empty">No pool configured.</div>
+        <div id="pool-toggles"></div>
       </div>
     </div>
-  </div>
 
-  <div class="divider">Models per scope</div>
-  <div class="section">
-    <p class="muted" style="margin:8px 0 12px">
-      Which model each path runs, and where that choice comes from.
-      A row set here is stored in the database and wins over <code>config.yaml</code>;
-      reset hands it back. Blank backend means "auto": whatever the chain resolves.
-      The two chat rows are where a console session <em>starts</em>: a plain chat on
-      <em>Chat</em>, an Ask-console row on <em>Handed rows</em> (point it at a frontier
-      model once, and every handed row gets it). The chip in the console then changes
-      one session only, never these defaults. The judge rows cannot go below their
-      floor. Executor Jobs and the deep tier read their env, so they are shown, not
-      set, here.
-    </p>
-    <div class="card" id="scopes-card"><div class="muted">Loading…</div></div>
-  </div>
-
-  <div class="divider">Provider keys</div>
-  <div class="section">
-    <p class="muted" style="margin:8px 0 12px">
-      Set a hosted provider's API key here or in sealed secrets. A key set here is
-      stored encrypted in the database, wins over the env, and applies live — no
-      secret PR, no restart. Values are never shown back; blank leaves a key
-      unchanged. Executor Jobs still read the cluster Secret.
-    </p>
-    <div class="card" id="keys-card"><div class="muted">Loading…</div></div>
-  </div>
-
-  <div class="divider">Ollama pool</div>
-  <div class="section">
-    <div class="card" id="pool-card">
-      <div class="muted" id="pool-empty">No pool configured.</div>
-      <div id="pool-toggles"></div>
+    <div>
+      <h3 class="llm-h">Config</h3>
+      <button class="chip" id="reload-btn" onclick="reloadConfig()" title="Re-read config.yaml after it was edited on disk.">Reload config.yaml</button>
+      <span class="muted" id="reload-status" style="margin-left:10px"></span>
     </div>
-  </div>
-
-  <div class="divider">Config file</div>
-  <div class="section">
-    <p class="muted" style="margin:8px 0 12px">
-      Hot-reload <code>config.yaml</code> after editing hosts / LLM base settings on disk.
-    </p>
-    <button class="chip primary" id="reload-btn" onclick="reloadConfig()">Reload config.yaml</button>
-    <span class="muted" id="reload-status" style="margin-left:10px"></span>
   </div>
 </section>
 
@@ -807,114 +847,341 @@ async function createToken(){
   await loadTokens();
 }
 
-/* ── LLM ── */
+/* ── LLM ── (CFOP-737)
+ * The tab draws what the agent does and puts the picker on the step it
+ * changes. Three reads build it: the default chain (/api/settings/llm_chain,
+ * in the order the agent walks it), the steps (/api/settings/llm_scopes) and
+ * the keys. LLM_FLOW is layout only: which step sits where, under which plain
+ * name, with one line for its tooltip. What a step runs on and whether it can
+ * be changed is the server's row; a row LLM_FLOW does not place is listed
+ * under "Other", so a new scope shows up unplaced, not missing.
+ * A pick saves when it changes. There is no Save/Reset pair on a step:
+ * choosing Default is the reset.
+ */
 let llmLoaded = false;
+const LLM = { chain:null, scopes:[], backends:[], avail:{}, models:{}, keyOpen:'', triagePick:false };
+const LLM_FLOW = [
+  { head:'Alerts', rail:true, items:[
+    { pill:'Alert' },
+    { scope:'triage', name:'Triage', tip:'Sorts each alert: drop, notify or investigate.' },
+    { scope:'investigate', name:'Investigate', tip:'Digs in with tools and writes up what it found.' },
+    { scope:'deep', name:'Deep dive', tip:'A second, harder look when the first one escalates.' },
+    { pill:'Investigation' },
+    { scope:'classifier', name:'Classify', tip:'Labels a fix: what kind, how risky.' },
+    { scope:'dedupe', name:'Dedupe', tip:'Checks whether that fix is already open.' },
+    { judges:true, name:'Judge', tip:'Can veto a fix that changes things. Each provider judges with the model picked here.' },
+    { scope:'executor', name:'Execute', tip:'Writes the change and opens the PR.' },
+    { ends:true },
+  ]},
+  { head:'Scheduled', items:[
+    { scope:'sweep', name:'Sweep', tip:'A health pass over everything.' },
+    { scope:'summary', name:'Morning summary', tip:'Writes the daily summary.' },
+  ]},
+  { head:'Chat', items:[
+    { scope:'chat', name:'New chat', tip:'Answers you in the console.' },
+    { scope:'handoff', name:'Ask console', tip:'Answers when you ask about a remediation or an investigation.' },
+  ]},
+];
+const LLM_ARROW = '<span class="arrow" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10h12M11 5l5 5-5 5"/></svg></span>';
+const LLM_LOCK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5 7V5a3 3 0 0 1 6 0v2"/></svg>';
+const LLM_SKIP_TIP = {
+  'no key': 'Skipped: no key. Add one under Keys.',
+  'no model': 'Skipped: no model picked.',
+  'unknown': 'Could not be read; it may be skipped.',
+};
+
 async function loadLlm(){
   if(!isAdmin()){
-    document.getElementById('eff-card').innerHTML = '<div class="muted">Admin role required.</div>';
+    document.getElementById('chain-rungs').innerHTML = '<div class="muted">Admin role required.</div>';
+    document.getElementById('scopes-card').innerHTML = '';
+    document.getElementById('keys-card').innerHTML = '';
     return;
   }
-  await Promise.all([loadEffective(), loadProvidersAndSettings(), loadPoolToggles(), loadProviderKeys(), loadLlmScopes()]);
+  await Promise.all([loadChain(), loadLlmScopes(), loadProviderKeys(), loadLoop(), loadPoolToggles()]);
   llmLoaded = true;
+  loadModelLists();
 }
-/* Models per scope (CFOP-122): one row per LLM seat the agent fills
-   unattended. Editable rows take a backend+model (sweep, summary,
-   classifier) or a model over a floor (judge:<backend>); the rest show
-   their effective value and provenance only. */
-function scopeSourceBadge(src){
-  if(src === 'console') return badge('console (database)', '--accent');
-  if(src === 'config') return badge('config.yaml', '--cyan');
-  if(src === 'floor') return badge('floor', '--orange');
-  if(src === 'env') return badge('env', '--cyan');
-  if(src === 'unknown') return badge('not visible here', '--text-muted');
-  return badge('default (chain)', '--text-muted');
+async function loadChain(){
+  const [c, prov] = await Promise.all([api('/api/settings/llm_chain'), api('/api/providers')]);
+  if(!c.ok){ document.getElementById('chain-rungs').innerHTML = `<div class="muted">${esc(c.error)}</div>`; return; }
+  LLM.chain = c.data;
+  if(prov.ok){
+    LLM.avail = {};
+    for(const p of (prov.data.providers || [])) LLM.avail[p.id] = !!p.available;
+  }
+  renderChain(); renderSteps();
 }
 async function loadLlmScopes(){
-  const card = document.getElementById('scopes-card');
   const r = await api('/api/settings/llm_scopes');
-  if(!r.ok){ card.innerHTML = `<div class="muted">${esc(r.error)}</div>`; return; }
-  const backends = r.data.backends || ['auto'];
-  const rows = (r.data.scopes || []).map(s => {
-    const eff = s.effective || {};
-    const effText = s.kind === 'chain' ? eff.chain
-      : s.kind === 'backend_model' ? `${eff.backend || 'auto'}${eff.model ? '/' + eff.model : ''}`
-      : (eff.model || '—');
-    let controls = '';
-    if(s.editable && s.kind === 'backend_model'){
-      const db = s.db || {};
-      const opts = backends.map(b => `<option value="${esc(b)}"${(db.backend || 'auto') === b ? ' selected' : ''}>${esc(b)}</option>`).join('');
-      controls = `<select id="scope-backend-${esc(s.scope)}" style="width:9em">${opts}</select>` +
-        `<input type="text" id="scope-model-${esc(s.scope)}" placeholder="model (optional)" value="${esc(db.model || '')}" style="width:14em">`;
-    } else if(s.editable && s.kind === 'model'){
-      controls = `<input type="text" id="scope-model-${esc(s.scope)}" placeholder="${esc(s.floor || 'model')}" value="${esc((s.db || {}).model || '')}" style="width:14em">`;
-    }
-    const buttons = s.editable
-      ? `<button class="chip primary" id="scope-save-${esc(s.scope)}" disabled onclick="saveLlmScope('${esc(s.scope)}','${esc(s.kind)}')">Save</button>` +
-        `<button class="chip" onclick="resetLlmScope('${esc(s.scope)}')"${s.source === 'console' ? '' : ' disabled'}>Reset</button>`
-      : '';
-    return `<div class="eff-row" style="gap:8px;flex-wrap:wrap" title="${esc(s.hint || '')}">` +
-      `<span>${esc(s.label)} <span class="mono">${esc(effText)}</span> ${scopeSourceBadge(s.source)}</span>` +
-      `<span style="display:inline-flex;gap:6px;align-items:center">${controls}${buttons}</span></div>`;
-  }).join('');
-  card.innerHTML = rows;
-  for(const s of (r.data.scopes || [])){
-    if(!s.editable) continue;
-    armSave(document.getElementById('scope-save-' + s.scope),
-      [document.getElementById('scope-backend-' + s.scope), document.getElementById('scope-model-' + s.scope)]);
+  if(!r.ok){ document.getElementById('scopes-card').innerHTML = `<div class="muted">${esc(r.error)}</div>`; return; }
+  LLM.scopes = r.data.scopes || [];
+  LLM.backends = (r.data.backends || []).filter(b => b !== 'auto');
+  renderSteps();
+}
+/* The pickers open on the model in effect and fill in once the lists arrive:
+   seven providers, each a request the server makes outward, so the page does
+   not wait on them to draw. `only` reloads one provider after its key changed. */
+async function loadModelLists(only){
+  const ids = only ? [only] : ['ollama'].concat(LLM.backends.filter(b => b !== 'ollama'));
+  await Promise.all(ids.filter(b => LLM.avail[b] !== false).map(async b => {
+    const r = await api('/api/models/' + encodeURIComponent(b));
+    LLM.models[b] = (r.ok && r.data && r.data.models) || [];
+  }));
+  renderChain(); renderSteps();
+}
+
+/* The model a backend answers with when nothing names one: its card on the
+   Default strip, or its configured model if it is not on the strip. */
+function llmOwnModel(backend){
+  const c = LLM.chain;
+  const r = c && (c.rungs || []).concat(c.manual || []).find(x => x.backend === backend);
+  return (r && r.model) || '';
+}
+/* The model in effect stays an option even when the provider's list does not
+   carry it (retired, or the list failed), so the picker never shows something
+   other than what runs. */
+function llmModelOptions(backend, current){
+  const list = (LLM.models[backend] || []).slice();
+  if(current && !list.includes(current)) list.unshift(current);
+  if(!list.length) return '<option value="">—</option>';
+  return list.map(m => `<option value="${esc(m)}"${m === current ? ' selected' : ''}>${esc(m)}</option>`).join('');
+}
+function llmProviderOptions(current){
+  const opts = [`<option value=""${current ? '' : ' selected'}>Default</option>`];
+  for(const b of LLM.backends){
+    const off = LLM.avail[b] === false && b !== current;
+    opts.push(`<option value="${esc(b)}"${b === current ? ' selected' : ''}${off ? ' disabled' : ''}>${esc(b)}${off ? ' (no key)' : ''}</option>`);
   }
+  return opts.join('');
 }
-async function saveLlmScope(scope, kind){
+
+/* ── Default: the chain ── */
+function renderChain(){
+  const c = LLM.chain, box = document.getElementById('chain-rungs');
+  if(!c || !box) return;
+  document.getElementById('fallback-toggle').checked = !!c.fallback;
+  box.classList.toggle('off', !c.fallback);
+  const everyone = (c.rungs || []).concat(c.manual || []);
+  const headAt = (c.rungs || []).findIndex(r => !r.skip);
+  let n = 0;
+  box.innerHTML = (c.rungs || []).map((r, i) => {
+    const num = r.skip ? '–' : String(++n);
+    // The first card is the selection, so it carries the provider picker;
+    // the rest are the fixed order behind it.
+    const name = i === 0
+      ? `<select aria-label="First provider" onchange="onBackendChange(this.value)">` + everyone.map(x => {
+          const off = LLM.avail[x.backend] === false && x.backend !== r.backend;
+          return `<option value="${esc(x.backend)}"${x.backend === r.backend ? ' selected' : ''}${off ? ' disabled' : ''}>${esc(x.label)}${off ? ' (no key)' : ''}</option>`;
+        }).join('') + `</select>`
+      : `<span>${esc(r.label)}</span>`;
+    const noKey = r.skip === 'no key';
+    let opts = llmModelOptions(r.backend, r.model);
+    if(!r.model && (LLM.models[r.backend] || []).length) opts = '<option value="" selected disabled>pick a model</option>' + opts;
+    return `<div class="rung${i === headAt ? ' head' : ''}${r.skip ? ' skip' : ''}">` +
+      `<div class="rung-top"><span class="rung-n">${num}</span>${name}` +
+      (r.skip ? `<span class="rung-skip" title="${esc(LLM_SKIP_TIP[r.skip] || '')}">${esc(r.skip)}</span>` : '') + `</div>` +
+      `<select aria-label="${esc(r.label)} model" data-backend="${esc(r.backend)}" onchange="onRungModel(this)"${noKey ? ' disabled' : ''}>${opts}</select></div>`;
+  }).join(LLM_ARROW);
+}
+async function onBackendChange(backend){
+  const r = await api('/api/settings/provider', {method:'POST', body: JSON.stringify({backend})});
+  if(!r.ok) toast('failed to save provider: ' + (r.error || ''), 'err'); else toast('first → ' + backend, 'ok');
+  await loadChain();
+}
+/* default:false saves the model this provider answers with and leaves the
+   order alone; without it the server would move this provider to the front. */
+async function onRungModel(sel){
+  const backend = sel.dataset.backend, model = sel.value;
+  if(!model) return;
+  const r = await api(`/api/models/${encodeURIComponent(backend)}/select`, {method:'POST', body: JSON.stringify({model, default:false})});
+  if(!r.ok) toast('failed to save model: ' + (r.error || ''), 'err'); else toast(backend + ' → ' + model, 'ok');
+  await loadChain();
+}
+async function onFallbackToggle(){
+  const enabled = document.getElementById('fallback-toggle').checked;
+  const r = await api('/api/settings/fallback', {method:'POST', body: JSON.stringify({allow_paid_escalation: enabled})});
+  if(!r.ok) toast('failed to save fallback: ' + (r.error || ''), 'err');
+  await loadChain();
+}
+
+/* ── The steps ── */
+function llmThenDefault(){
+  return `<span class="then" title="If this model fails, the Default models are tried next.">${LLM_ARROW}` +
+    `<span class="pill-default"><span class="dot" aria-hidden="true"></span>Default</span></span>`;
+}
+function llmStepWrap(cls, name, tip, body){
+  return `<div class="step${cls}"><div class="step-rail"><i aria-hidden="true"></i></div><div class="step-body">` +
+    `<span class="step-name" title="${esc(tip || '')}">${esc(name)}</span>${body}</div></div>`;
+}
+/* Triage is an Ollama model or nothing: 'off' (or no model at all) means it
+   runs on Default like everything else. A blank value hands the choice back
+   to config.yaml, so the config's own model is the option whose value is ''. */
+function llmTriageStep(item, s){
+  const db = (s.db && s.db.model) || '', cfg = (s.config && s.config.model) || '';
+  const isOff = ['off', 'none', 'disabled'].includes(db.toLowerCase());
+  const cur = isOff ? '' : (db || cfg);
+  const isDefault = !cur && !LLM.triagePick;
+  let body = `<select class="prov" id="triage-prov" aria-label="Triage provider" onchange="onTriageProviderChange()">` +
+    `<option value="ollama"${isDefault ? '' : ' selected'}>ollama</option>` +
+    `<option value="off"${isDefault ? ' selected' : ''}>Default</option></select>`;
+  if(!isDefault){
+    const list = (LLM.models.ollama || []).slice();
+    if(cur && !list.includes(cur)) list.unshift(cur);
+    const pulled = LLM.models.ollama;   // undefined until the list has loaded
+    const opts = (cur ? '' : '<option value="" selected disabled>pick a model</option>') + list.map(m =>
+      `<option value="${esc(m === cfg ? '' : m)}"${m === cur ? ' selected' : ''}>${esc(m)}` +
+      `${pulled && !pulled.includes(m) ? ' (not pulled)' : ''}</option>`).join('');
+    body += `<select class="model" id="triage-model" aria-label="Triage model" onchange="onTriageModelChange()">${opts}</select>` + llmThenDefault();
+  }
+  return llmStepWrap(isDefault ? ' is-default' : '', item.name, item.tip, body);
+}
+function llmStep(item, s){
+  if(s.scope === 'triage') return llmTriageStep(item, s);
+  const name = item.name || s.label, id = esc(s.scope), eff = s.effective || {};
+  let tip = item.tip || s.hint || '';
+  if(s.source === 'config') tip += '\nSet in config.yaml.';
+  if(s.kind === 'backend_model' && s.editable){
+    const backend = (eff.backend && eff.backend !== 'auto') ? eff.backend : '';
+    const model = eff.model || (backend ? llmOwnModel(backend) : '');
+    const isDefault = !backend && !eff.model;
+    let body = `<select class="prov" id="scope-backend-${id}" aria-label="${esc(name)} provider" onchange="saveLlmScope('${id}', true)">${llmProviderOptions(backend)}</select>`;
+    if(backend) body += `<select class="model" id="scope-model-${id}" aria-label="${esc(name)} model" onchange="saveLlmScope('${id}')">${llmModelOptions(backend, model)}</select>`;
+    else if(eff.model) body += `<span class="locked">${esc(eff.model)}</span>`;
+    if(!isDefault && LLM.chain && LLM.chain.fallback) body += llmThenDefault();
+    return llmStepWrap(isDefault ? ' is-default' : '', name, tip, body);
+  }
+  if(s.kind === 'default')
+    return llmStepWrap(' is-default', name, tip, `<span class="locked is-default">${LLM_LOCK}Default</span>`);
+  // Read-only here: the executor's chain and the deep tier come from an env
+  // this process does not own.
+  const text = s.kind === 'chain' ? eff.chain : (s.source === 'unknown' ? 'set outside the console' : eff.model);
+  return llmStepWrap(' is-locked', name, tip + (s.hint ? '\n' + s.hint : ''), `<span class="locked">${LLM_LOCK}${esc(text || '—')}</span>`);
+}
+/* One picker per judge provider. The first option is where a reset lands
+   (config.yaml's model, else the floor); the server refuses anything below
+   the floor, and the refusal is the toast. */
+function llmJudgeStep(item, judges){
+  const picks = judges.map(s => {
+    const base = (s.config && s.config.model) || s.floor || '';
+    const cur = (s.db && s.db.model) || '';
+    const list = (LLM.models[s.backend] || []).filter(m => m !== base);
+    if(cur && !list.includes(cur)) list.unshift(cur);
+    const opts = `<option value=""${cur ? '' : ' selected'}>${esc(base)}</option>` +
+      list.map(m => `<option value="${esc(m)}"${m === cur ? ' selected' : ''}>${esc(m)}</option>`).join('');
+    return `<label><span>${esc(s.backend)}</span><select id="scope-model-${esc(s.scope)}" aria-label="Judge model, ${esc(s.backend)}" ` +
+      `title="Never below ${esc(s.floor || '')}." onchange="saveLlmScope('${esc(s.scope)}')">${opts}</select></label>`;
+  }).join('');
+  return llmStepWrap('', item.name, item.tip, `<div class="judges">${picks}</div>`);
+}
+function renderSteps(){
+  const card = document.getElementById('scopes-card');
+  if(!card || !LLM.scopes.length) return;
+  const rows = {}, placed = new Set();
+  for(const s of LLM.scopes) rows[s.scope] = s;
+  const judges = LLM.scopes.filter(s => s.scope.startsWith('judge:'));
+  judges.forEach(s => placed.add(s.scope));
+  const section = (head, rail, html) => html ? `<div><h3 class="llm-h">${esc(head)}</h3><div class="steps${rail ? ' rail' : ''}">${html}</div></div>` : '';
+  let out = LLM_FLOW.map(g => section(g.head, g.rail, g.items.map((it, i) => {
+    if(it.pill) return `<div class="pill-row${i === 0 ? ' first' : ''}"><span class="pill">${esc(it.pill)}</span></div>`;
+    if(it.ends) return `<div class="pill-row last"><span class="pill">PR</span><span class="muted">or</span><span class="pill">Filed</span>${LLM_ARROW}` +
+      `<span class="pill solid" title="Asks, every 15 minutes, whether a filed fix still stands.">Re-check<span class="mono">${LLM_LOCK}Judge models</span></span></div>`;
+    if(it.judges) return judges.length ? llmJudgeStep(it, judges) : '';
+    const s = rows[it.scope];
+    if(!s) return '';
+    placed.add(s.scope);
+    return llmStep(it, s);
+  }).join(''))).join('');
+  out += section('Other', false, LLM.scopes.filter(s => !placed.has(s.scope)).map(s => llmStep({}, s)).join(''));
+  card.innerHTML = out;
+}
+/* One write for every step. A step row sends its provider and model; a
+   provider change sends no model, so the step starts on that provider's own
+   one instead of carrying the last provider's id across. A judge sends a
+   model only. Default (or a judge's first option) is the reset. */
+async function saveLlmScope(scope, providerChanged){
+  const b = document.getElementById('scope-backend-' + scope);
+  const m = document.getElementById('scope-model-' + scope);
   const body = {};
-  const modelEl = document.getElementById('scope-model-' + scope);
-  if(modelEl) body.model = (modelEl.value || '').trim();
-  const backendEl = document.getElementById('scope-backend-' + scope);
-  if(backendEl) body.backend = backendEl.value;
-  const r = await runSave(document.getElementById('scope-save-' + scope), async () => {
-    const res = await api(`/api/settings/llm_scopes/${scope}`, {method:'PUT', body: JSON.stringify(body)});
-    if(res.ok) await loadLlmScopes();
-    return res;
-  });
-  if(!r.ok){ toast('failed to save ' + scope + ': ' + (r.error || ''), 'err'); return; }
-  toast(scope + ' → ' + (body.backend && body.backend !== 'auto' ? body.backend + '/' : '') + (body.model || 'auto'), 'ok');
-}
-async function resetLlmScope(scope){
-  const r = await api(`/api/settings/llm_scopes/${scope}`, {method:'DELETE'});
-  if(!r.ok){ toast('failed to reset ' + scope + ': ' + (r.error || ''), 'err'); return; }
-  toast(scope + ' reset — config applies', 'ok');
+  if(b) body.backend = b.value;
+  body.model = (m && !providerChanged) ? (m.value || '').trim() : '';
+  if((b && !body.backend) || (!b && !body.model)) return resetLlmScope(scope);
+  const r = await api(`/api/settings/llm_scopes/${encodeURIComponent(scope)}`, {method:'PUT', body: JSON.stringify(body)});
+  if(!r.ok) toast('not saved: ' + (r.error || ''), 'err');
+  else toast(scope + ' → ' + (body.backend ? body.backend + (body.model ? '/' : '') : '') + body.model, 'ok');
   await loadLlmScopes();
 }
-/* Provider keys (CFOP-111): one row per hosted provider the agent registers.
-   The server never returns a value; the row shows where the key in effect
-   comes from and, when configured, its last four characters. */
+async function resetLlmScope(scope){
+  const r = await api(`/api/settings/llm_scopes/${encodeURIComponent(scope)}`, {method:'DELETE'});
+  if(!r.ok) toast('not reset: ' + (r.error || ''), 'err'); else toast(scope + ' → default', 'ok');
+  await loadLlmScopes();
+}
+async function postTriageModel(model, say){
+  const r = await api('/api/settings/triage_model', {method:'POST', body: JSON.stringify({model})});
+  if(!r.ok) toast('failed to save triage model: ' + (r.error || ''), 'err'); else toast('triage → ' + say, 'ok');
+  LLM.triagePick = false;
+  await loadLlmScopes();
+}
+function onTriageProviderChange(){
+  const s = LLM.scopes.find(x => x.scope === 'triage') || {};
+  const cfg = (s.config && s.config.model) || '';
+  if(document.getElementById('triage-prov').value === 'off') return postTriageModel('off', 'default');
+  // Back to Ollama: config.yaml's model if it names one, else wait for a pick.
+  if(cfg) return postTriageModel('', cfg);
+  LLM.triagePick = true; renderSteps();
+}
+function onTriageModelChange(){
+  const sel = document.getElementById('triage-model');
+  const say = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : sel.value;
+  return postTriageModel(sel.value, say);
+}
+
+/* ── Keys (CFOP-111) ──
+   One chip per hosted provider. The server never returns a value: the dot
+   says whether a key is in effect and the tooltip where it comes from. */
 async function loadProviderKeys(){
   const card = document.getElementById('keys-card');
   const r = await api('/api/settings/llm_keys');
   if(!r.ok){ card.innerHTML = `<div class="muted">${esc(r.error)}</div>`; return; }
   const storage = r.data.storage === 'available';
-  const rows = (r.data.providers || []).map(p => {
-    const src = p.source === 'console' ? badge('console (database)', '--accent')
-      : p.source === 'env' ? badge('env / sealed secret', '--cyan')
-      : p.source === 'unreadable' ? badge('stored key unreadable', '--orange')
-      : p.source === 'unknown' ? badge('database unreachable — env applies', '--orange')
-      : badge('not configured', '--text-muted');
-    const hint = p.hint ? `<span class="mono muted">…${esc(p.hint)}</span>` : '';
+  const chips = (r.data.providers || []).map(p => {
+    const set = p.source === 'console' || p.source === 'env';
+    const warn = p.source === 'unreadable' || p.source === 'unknown';
+    const tip = (p.source === 'console' ? 'Key set here' : p.source === 'env' ? 'Key from the deployment'
+      : p.source === 'unreadable' ? 'The stored key cannot be read; the deployment key applies'
+      : p.source === 'unknown' ? 'Database unreachable; the deployment key applies' : 'No key') +
+      (p.hint ? ', ending ' + p.hint : '');
     const clearable = p.source === 'console' || p.source === 'unreadable';
-    return `<div class="eff-row" style="gap:8px;flex-wrap:wrap">` +
-      `<span>${esc(p.label)} <span class="muted">(${esc(p.key_env)})</span> ${src} ${hint}</span>` +
-      `<span style="display:inline-flex;gap:6px;align-items:center">` +
-      `<input type="password" id="key-${esc(p.id)}" placeholder="paste key" autocomplete="off" ` +
-      `style="width:16em"${storage ? '' : ' disabled'}>` +
+    const open = LLM.keyOpen === p.id;
+    return `<div class="key"><span class="key-id" title="${esc(tip)}">` +
+      `<span class="dot${set ? '' : warn ? ' warn' : ' off'}" role="img" aria-label="${esc(tip)}"></span>${esc(p.label)}</span>` +
+      `<button type="button" class="chip" aria-expanded="${open}" onclick="toggleKeyForm('${esc(p.id)}')">${set ? 'Replace' : 'Add'}</button>` +
+      `<span class="key-form" id="key-form-${esc(p.id)}"${open ? '' : ' hidden'}>` +
+      `<input type="password" id="key-${esc(p.id)}" placeholder="paste key" aria-label="${esc(p.label)} key" autocomplete="off"${storage ? '' : ' disabled'}>` +
       `<button class="chip primary" id="key-save-${esc(p.id)}" disabled onclick="saveProviderKey('${esc(p.id)}')">Save</button>` +
-      `<button class="chip" onclick="clearProviderKey('${esc(p.id)}')"${clearable ? '' : ' disabled'}>Clear</button>` +
+      `<button class="chip" title="Remove the key set here; the deployment key applies." onclick="clearProviderKey('${esc(p.id)}')"${clearable ? '' : ' disabled'}>Clear</button>` +
       `</span></div>`;
   }).join('');
   card.innerHTML = (storage ? '' :
-    `<div class="muted" style="margin-bottom:8px">CFOP_SESSION_SECRET is unset on the agent, so a key ` +
-    `cannot be stored encrypted; set it in the deployment first.</div>`) + rows;
+    `<div class="muted" style="flex-basis:100%">CFOP_SESSION_SECRET is unset on the agent, so a key ` +
+    `cannot be stored encrypted; set it in the deployment first.</div>`) + chips;
   // Without storage the input is disabled too, so the Save stays grey.
   if(storage) for(const p of (r.data.providers || [])){
     armSave(document.getElementById('key-save-' + p.id), [document.getElementById('key-' + p.id)]);
   }
+}
+function toggleKeyForm(id){
+  LLM.keyOpen = LLM.keyOpen === id ? '' : id;
+  document.querySelectorAll('#keys-card .key-form').forEach(f => { f.hidden = f.id !== 'key-form-' + LLM.keyOpen; });
+  document.querySelectorAll('#keys-card .key > button.chip').forEach(b => {
+    b.setAttribute('aria-expanded', String(b.nextElementSibling.id === 'key-form-' + LLM.keyOpen)); });
+  const input = document.getElementById('key-' + id);
+  if(LLM.keyOpen && input) input.focus();
+}
+/* A key decides whether a provider is a rung and what its model list is, so
+   both are read again after one changes. */
+async function afterKeyChange(id){
+  await Promise.all([loadProviderKeys(), loadChain()]);
+  loadModelLists(id);
 }
 async function saveProviderKey(id){
   const input = document.getElementById('key-' + id);
@@ -922,10 +1189,7 @@ async function saveProviderKey(id){
   if(!key){ toast('paste a key first — blank leaves it unchanged', 'err'); return; }
   const r = await runSave(document.getElementById('key-save-' + id), async () => {
     const res = await api(`/api/settings/llm_keys/${id}`, {method:'PUT', body: JSON.stringify({key})});
-    if(res.ok){
-      input.value = '';
-      await Promise.all([loadProviderKeys(), loadEffective(), loadProvidersAndSettings()]);
-    }
+    if(res.ok){ input.value = ''; LLM.keyOpen = ''; await afterKeyChange(id); }
     return res;
   });
   if(!r.ok){ toast('failed to save key: ' + (r.error || ''), 'err'); return; }
@@ -934,148 +1198,19 @@ async function saveProviderKey(id){
 async function clearProviderKey(id){
   const r = await api(`/api/settings/llm_keys/${id}`, {method:'DELETE'});
   if(!r.ok){ toast('failed to clear key: ' + (r.error || ''), 'err'); return; }
-  toast(id + ' key cleared — env applies', 'ok');
-  await Promise.all([loadProviderKeys(), loadEffective(), loadProvidersAndSettings()]);
+  toast(id + ' key cleared — the deployment key applies', 'ok');
+  LLM.keyOpen = '';
+  await afterKeyChange(id);
 }
-async function loadEffective(){
-  const [prov, sel, fb] = await Promise.all([
-    api('/api/providers'),
-    api('/api/settings/provider'),
-    api('/api/settings/fallback'),
-  ]);
-  const card = document.getElementById('eff-card');
-  if(!prov.ok){ card.innerHTML = `<div class="muted">${esc(prov.error)}</div>`; return; }
-  const providers = (prov.data && prov.data.providers) || [];
-  const backend = (sel.ok && sel.data && sel.data.backend) || 'auto';
-  const model = (sel.ok && sel.data && sel.data.model) || '';
-  const paid = !!(fb.ok && fb.data && fb.data.allow_paid_escalation);
-  const rows = providers.map(p => {
-    const avail = p.available ? 'available' : 'unavailable';
-    const col = p.available ? '--accent' : '--text-muted';
-    return `<div class="eff-row"><span>${esc(p.name)} <span class="muted">(${esc(p.id)})</span></span>${badge(avail, col)}</div>`;
-  }).join('');
-  const tm = await api('/api/settings/triage_model');
-  const triage = (tm.ok && tm.data && tm.data.effective) || '';
-  card.innerHTML =
-    `<div class="eff-row"><span>Selected backend</span><span class="mono">${esc(backend||'auto')}</span></div>` +
-    `<div class="eff-row"><span>Selected model</span><span class="mono">${esc(model)||'—'}</span></div>` +
-    `<div class="eff-row"><span>Triage model</span><span class="mono">${esc(triage)||'—'}</span></div>` +
-    `<div class="eff-row"><span>Paid fallback</span>${badge(paid?'enabled':'disabled', paid?'--orange':'--text-muted')}</div>` +
-    `<div style="margin-top:10px" class="muted">Providers</div>${rows}`;
-}
-function fetchModels(backend){
-  const modelSelect = document.getElementById('model-select');
-  if(!backend || backend === 'auto'){
-    modelSelect.innerHTML = '<option value="">(auto)</option>';
-    modelSelect.disabled = true;
-    return;
-  }
-  modelSelect.disabled = false;
-  modelSelect.innerHTML = '<option value="">Loading...</option>';
-  fetch(`/api/models/${backend}`)
-    .then(r => r.json())
-    .then(data => {
-      if(data.models && data.models.length > 0){
-        modelSelect.innerHTML = data.models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
-        if(data.selected && data.models.includes(data.selected)) modelSelect.value = data.selected;
-      } else {
-        modelSelect.innerHTML = '<option value="">No models</option>';
-      }
-    })
-    .catch(() => { modelSelect.innerHTML = '<option value="">Error</option>'; });
-}
-async function loadProvidersAndSettings(){
-  const prov = await api('/api/providers');
-  const select = document.getElementById('llm-backend');
-  select.innerHTML = '';
-  if(prov.ok){
-    (prov.data.providers || []).forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.name + ((!p.available && p.id !== 'auto') ? ' (unavailable)' : '');
-      if(!p.available && p.id !== 'auto') opt.disabled = true;
-      select.appendChild(opt);
-    });
-  }
-  const sel = await api('/api/settings/provider');
-  const backend = (sel.ok && sel.data && sel.data.backend) || 'auto';
-  select.value = backend;
-  fetchModels(backend);
 
-  const max = await api('/api/settings/max_tool_iterations');
+/* ── Loop, pool, config ── */
+async function loadLoop(){
+  const [max, ooda] = await Promise.all([api('/api/settings/max_tool_iterations'), api('/api/settings/ooda')]);
   if(max.ok) document.getElementById('max-iterations').value = max.data.max_tool_iterations;
-
-  const ooda = await api('/api/settings/ooda');
   if(ooda.ok){
     document.getElementById('alert-interval').value = ooda.data.alert_check_interval;
     document.getElementById('sweep-interval').value = Math.round(ooda.data.sweep_interval / 60);
   }
-
-  const fb = await api('/api/settings/fallback');
-  if(fb.ok) document.getElementById('fallback-toggle').checked = !!fb.data.allow_paid_escalation;
-
-  await loadTriageModel();
-}
-async function loadTriageModel(){
-  // Options: "(use config)" = clear the DB override, "off" = disable despite
-  // config, plus whatever ollama has pulled. NOTE: /api/models/ollama lists the
-  // PRIMARY host's tags. If llm.triage_url points at a different box (CFOP-175),
-  // this list is the wrong host's models — a known gap until a triage-host-aware
-  // picker ships. The list is still the right source when triage shares the
-  // primary host, which is the default.
-  const sel = document.getElementById('triage-model');
-  const [tm, models] = await Promise.all([
-    api('/api/settings/triage_model'),
-    api('/api/models/ollama'),
-  ]);
-  const cfg = (tm.ok && tm.data && tm.data.config) || '';
-  const db = (tm.ok && tm.data && tm.data.db) || '';
-  const opts = [`<option value="">(use config${cfg ? ': ' + esc(cfg) : ''})</option>`,
-                `<option value="off">off — disable triage model</option>`];
-  ((models.ok && models.data && models.data.models) || []).forEach(m => {
-    opts.push(`<option value="${esc(m)}">${esc(m)}</option>`);
-  });
-  // A DB value not in the pulled list (model deleted from ollama) must stay
-  // visible rather than silently snapping to "(use config)".
-  const known = ['', 'off'].concat((models.ok && models.data && models.data.models) || []);
-  if(db && !known.includes(db)) opts.push(`<option value="${esc(db)}">${esc(db)} (not pulled)</option>`);
-  sel.innerHTML = opts.join('');
-  sel.value = db;
-}
-function onTriageModelChange(){
-  const model = document.getElementById('triage-model').value;
-  fetch('/api/settings/triage_model', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({model})
-  }).then(r => { if(!r.ok) toast('failed to save triage model','err'); else { toast('triage model → '+(model||'config'),'ok'); loadEffective(); }})
-    .catch(() => toast('failed to save triage model','err'));
-}
-function onBackendChange(){
-  const backend = document.getElementById('llm-backend').value;
-  fetch('/api/settings/provider', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({backend})
-  }).then(r => { if(!r.ok) toast('failed to save provider','err'); else { toast('provider → '+backend,'ok'); loadEffective(); }})
-    .catch(() => toast('failed to save provider','err'));
-  fetchModels(backend);
-}
-function onModelChange(){
-  const backend = document.getElementById('llm-backend').value;
-  const model = document.getElementById('model-select').value;
-  if(!model || backend === 'auto') return;
-  fetch(`/api/models/${backend}/select`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({model})
-  }).then(r => { if(!r.ok) toast('failed to save model','err'); else { toast('model → '+model,'ok'); loadEffective(); }})
-    .catch(() => toast('failed to save model','err'));
-}
-function onFallbackToggle(){
-  const enabled = document.getElementById('fallback-toggle').checked;
-  fetch('/api/settings/fallback', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({allow_paid_escalation: enabled})
-  }).then(r => { if(!r.ok) toast('failed to save fallback','err'); else loadEffective(); })
-    .catch(() => toast('failed to save fallback','err'));
 }
 function flashInput(el, ok){
   el.style.borderColor = ok ? 'var(--accent)' : 'var(--red)';
@@ -1143,8 +1278,7 @@ async function reloadConfig(){
   if(!r.ok){ st.textContent = ''; toast(r.error,'err'); return; }
   st.textContent = 'reloaded';
   toast('config reloaded','ok');
-  loadEffective();
-  loadProvidersAndSettings();
+  loadLlm();
 }
 
 /* ── Repos ──
@@ -1512,9 +1646,6 @@ document.getElementById('conn-rows').addEventListener('click', (e)=>{
   else if(act === 'rm-save') removeConn(name);
   else if(act === 'cancel'){ const tr = connFormRow(name); if(tr){ tr.hidden = true; tr.querySelector('.formbody').innerHTML=''; } }
 });
-
-document.getElementById('llm-backend').addEventListener('change', onBackendChange);
-document.getElementById('model-select').addEventListener('change', onModelChange);
 
 /* ── Node-action allowlist ── */
 let ALLOW = null;
