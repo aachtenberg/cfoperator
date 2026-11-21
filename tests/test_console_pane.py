@@ -18,6 +18,11 @@ and the pane docks beside it, as on Investigations. The dock's own rules
 ``test_console_shell.py``; here the page is run to hold what docking needs
 of it: the open row is marked and stays marked across a repaint, and the URL
 names it.
+
+And the pane uses a wide screen (CFOP-739): given the room, the facts cards
+stand beside the recommendation instead of the right half of the screen going
+empty. That is one layout too, written once, and switched by the pane's own
+width.
 """
 
 from repo_paths import REPO_ROOT
@@ -33,7 +38,7 @@ PANE_PAGES = ["investigations.html", "remediations.html"]
 
 #: What the pane is made of. A page that styles one of these itself has
 #: started the second copy.
-KIT = [".pane", ".p-head", ".p-meta", ".p-actions", ".pcard", ".pgrid", ".prow", ".fold"]
+KIT = [".pane", ".p-head", ".p-meta", ".p-actions", ".pcard", ".pgrid", ".prow", ".fold", ".p-cols"]
 #: The fix renderer's output. A page that writes these itself draws its own fix.
 FIX_MARKUP = ['class="tgt"', 'class="steps"', 'class="fix-meta"', 'class="ev"']
 
@@ -186,6 +191,10 @@ ROWS = {
                      "change_record": {"url": "https://github.com/o/r/pull/1",
                                        "plan": {"commands": [_XSS]}}}},
 }
+
+# Nothing decided this row and nothing tracks it: there are no facts cards.
+ROWS["5"] = {"id": 5, "status": "pending", "remediation_class": "manual", "risk": "low", "confidence": 0.5,
+             "attempts": 0, "created_at": "2026-11-20T10:00:00", "payload": {"recommendation": "Look at it"}}
 
 _STUB = r"""
 const fs=require('fs'), vm=require('vm'), path=require('path');
@@ -494,3 +503,105 @@ def test_what_folds_beside_a_docked_pane_is_marked_and_only_folds_there():
     assert media < css.index(rule) < css.index("#detail.dock.max"), (
         "the fold is not inside the dock's media query: the pipeline would vanish under a plain drawer too")
     assert css.count(".dock-fold") == 1, "something else hides .dock-fold"
+
+
+# --------------------------------------------------------------------------
+# the pane on a wide screen (CFOP-739)
+# --------------------------------------------------------------------------
+
+MAIN, SIDE, REST = '<div class="p-main">', '<div class="pgrid p-side">', '<div class="p-rest">'
+
+
+def _block(css, opener):
+    """``(inside, outside)`` of the one at-rule that starts with ``opener``, by brace count."""
+    assert css.count(opener) == 1, f"expected one {opener!r} in console.css, found {css.count(opener)}"
+    start = css.index("{", css.index(opener)) + 1
+    depth, i = 1, start
+    while depth:
+        depth += {"{": 1, "}": -1}.get(css[i], 0)
+        i += 1
+    return css[start:i - 1], css[:css.index(opener)] + css[i:]
+
+
+def _css():
+    return re.sub(r"/\*.*?\*/", "", read("console.css"), flags=re.S)
+
+
+@pytest.mark.parametrize("page,main,side,rest", [
+    ("investigations.html", ["actionBar(r)", 'id="explain"', 'id="cockpit"', "recommendationBlock("],
+     ["triageBlock(r)", "similarBlock(f)"], ["sessionsBlock(r)", 'class="pcard fold"']),
+    ("remediations.html", ["actionBar(r)", 'aria-label="Recommendation"'],
+     ['aria-label="Decision"', 'aria-label="Tracking"'],
+     ["changeRecordHtml(r)", "blockedCommandsHtml(r)", "foldsHtml(p)"]),
+])
+def test_a_pane_is_three_groups_in_reading_order(page, main, side, rest):
+    """Stacked, the groups show in the order they are written, so the order
+    here is the drawer's. A facts card written into the first group would
+    not move to the side; one written after the folds would sit under them."""
+    js = inline_script(page)
+    tpl = js[js.index('<div class="p-cols">'):]
+    tpl = tpl[:tpl.index("</div></div>`;")]
+    at = [tpl.index(m) for m in (MAIN, SIDE, REST)]
+    assert at == sorted(at), f"{page}: the groups are not main, facts, rest"
+    for group, lo, hi in ((main, at[0], at[1]), (side, at[1], at[2]), (rest, at[2], len(tpl))):
+        for part in group:
+            assert tpl.count(part) == 1, f"{page}: {part} is written {tpl.count(part)} times under the head"
+            assert lo < tpl.index(part) < hi, f"{page}: {part} is not in the group it belongs to"
+    head = js[js.index('<div class="pane">'):js.index('<div class="p-cols">')]
+    assert 'class="p-head"' in head and 'class="p-meta"' in head, (
+        f"{page}: the head and the meta line span the pane, so they are written before the columns")
+
+
+def test_the_painted_drawer_keeps_the_groups(run):
+    d = run["drawers"]["1"]
+    at = [d.index(m) for m in ('<div class="p-cols">', MAIN, '<div class="p-actions">', 'aria-label="Recommendation"',
+                               SIDE, 'aria-label="Decision"', 'aria-label="Tracking"', REST, '<div class="pcard fold">')]
+    assert at == sorted(at)
+    assert d.count(SIDE) == 1 and d.count('class="pgrid') == 1, "the facts are one grid, and it is the side group"
+
+
+def test_a_row_with_no_facts_has_no_side_group(run):
+    """An empty side group would still take its column. The stylesheet only
+    makes two columns when the group is there, so it must not be written
+    empty."""
+    d = run["drawers"]["5"]
+    assert MAIN in d and REST in d
+    assert "p-side" not in d and 'aria-label="Decision"' not in d and 'aria-label="Tracking"' not in d
+
+
+def test_two_columns_are_decided_by_the_panes_own_width():
+    """Not the viewport's: the pane is docked, maximized, or over the list
+    while a terminal is open, three widths on one screen."""
+    css = _css()
+    assert re.search(r"#detail\.dock\s*\{\s*container:\s*pane\s*/\s*inline-size;\s*\}", css), (
+        "the docking drawer no longer names itself the pane's container")
+    inside, outside = _block(css, "@container pane")
+    assert re.search(r"\.p-cols:has\(> \.p-side\)\s*\{[^}]*display:\s*grid", inside), (
+        "the two columns are gone, or no longer wait for a side group to be there")
+    assert re.search(r"\.p-cols > \.p-side\s*\{[^}]*grid-column:\s*2", inside)
+    for selector, body in re.findall(r"([^{}]*)\{([^}]*)\}", outside):
+        if re.search(r"\.p-(cols|main|rest|side)\b", selector):
+            assert "grid" not in body, (
+                f"{selector.strip()} lays out columns outside the container query: a narrow drawer would get them")
+
+
+def test_one_column_ends_where_two_begin():
+    """The stacked pane is capped at the width where it becomes two columns.
+    A lower cap is the empty band this was written to remove; a higher one
+    never applies."""
+    css = _css()
+    cap = re.search(r"(?:^|})\s*\.pane\s*\{[^}]*max-width:\s*(\d+)px", css, re.M)
+    at = re.search(r"@container pane \(min-width:\s*(\d+)px\)", css)
+    assert cap and at, "the pane's cap or the container query was not found"
+    assert cap.group(1) == at.group(1), f"one column is capped at {cap.group(1)}px, two start at {at.group(1)}px"
+    inside, _ = _block(css, "@container pane")
+    wide = re.search(r"\.pane:has\(\.p-side\)\s*\{[^}]*max-width:\s*(\d+)px", inside)
+    assert wide and int(wide.group(1)) > int(cap.group(1)), "two columns are no wider than one"
+
+
+@pytest.mark.parametrize("page", PANE_PAGES)
+def test_a_page_does_not_lay_out_the_columns_itself(page):
+    css = re.sub(r"/\*.*?\*/", "", page_styles(page), flags=re.S)
+    assert "@container" not in css, f"{page} has its own container query"
+    own = re.findall(r"\.p-(?:cols|main|rest|side)\b", css)
+    assert not own, f"{page} styles {sorted(set(own))}; the pane's columns are console.css's"
