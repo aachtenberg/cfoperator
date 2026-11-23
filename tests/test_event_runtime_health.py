@@ -113,13 +113,16 @@ def test_a_hanging_scheduler_does_not_hang_health(tmp_path):
 def test_probes_during_a_hang_share_one_call(tmp_path):
     """The pile-up itself: sixty probes must not be sixty parked threads."""
     scheduler = _HangingScheduler()
+    # A name of its own, so the count below is of this test's threads only.
+    # active_count() would also see another test's call still winding down.
+    scheduler.name = "pile-up"
     runtime = _runtime(tmp_path, scheduler, timeout=0.05)
     try:
-        before = threading.active_count()
         for _ in range(10):
             runtime.health()
         assert scheduler.calls == 1, f"{scheduler.calls} health calls were started while the first was stuck"
-        assert threading.active_count() - before == 1
+        parked = [t for t in threading.enumerate() if t.name == "health-pile-up"]
+        assert len(parked) == 1
     finally:
         scheduler.release.set()
 
