@@ -70,8 +70,9 @@ def create_app(runtime=None, worker=None):
 
     @app.get("/livez")
     def livez() -> dict:
-        # Liveness only: must never touch the runtime (health() does a
-        # live jobstore query, so a slow DB would get the pod killed).
+        # Liveness only: must never touch the runtime. health() does a
+        # live jobstore query; it is bounded now (CFOP-768), but a
+        # liveness answer should not depend on that staying true.
         return {"status": "alive"}
 
     @app.get("/health")

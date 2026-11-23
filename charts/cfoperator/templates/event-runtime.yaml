@@ -106,6 +106,10 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+            # Above the 3s the runtime gives its scheduler health check
+            # (HEALTH_CALL_TIMEOUT_SECONDS). With the default of 1s the kubelet
+            # hangs up before /health can say the jobstore is not answering.
+            timeoutSeconds: 5
           {{- with .Values.eventRuntime.resources }}
           resources:
 {{ toYaml . | indent 12 }}

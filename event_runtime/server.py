@@ -24,6 +24,11 @@ from .telemetry import mark_poll_completed
 from .telemetry import observe_completion_request, render_metrics
 from .worker import BackgroundAlertWorker, QueueFullError
 
+logger = logging.getLogger(__name__)
+
+# What a write raises when the peer has already hung up.
+_CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Dict[str, Any]) -> None:
     data = json.dumps(payload, ensure_ascii=True, default=str).encode("utf-8")
@@ -72,11 +77,27 @@ def _bounded_int(raw: str | None, default: int, low: int, high: int) -> int:
 
 def _bytes_response(handler: BaseHTTPRequestHandler, status: int, payload: bytes, content_type: str) -> None:
     data = payload
-    handler.send_response(status)
-    handler.send_header("Content-Type", content_type)
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
+    try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", content_type)
+        handler.send_header("Content-Length", str(len(data)))
+        # The first byte goes out here, not at send_response: the status line
+        # and headers are buffered until end_headers. So this and the body
+        # write are both places a departed client shows up.
+        handler.end_headers()
+        handler.wfile.write(data)
+    except _CLIENT_GONE as exc:
+        # The client stopped waiting; a kubelet probe does after its timeout.
+        # Unhandled, socketserver prints a traceback for each one, and sixty
+        # probes that gave up during one outage read as a crashing runtime to
+        # the traceback-rate alert (CFOP-768). There is nobody left to answer,
+        # so say it in one line and drop the connection. Not silent: a run of
+        # these is the trace of whatever made the answer late.
+        handler.close_connection = True
+        logger.info(
+            "client closed the connection before the %d response to %r was written (%s)",
+            int(status), urlparse(getattr(handler, "path", "") or "").path, type(exc).__name__,
+        )
 
 
 def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = None):
@@ -98,8 +119,9 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
             if not self._authorized(parsed.path):
                 return
             if parsed.path == "/livez":
-                # Liveness only: must never touch the runtime (health() does a
-                # live jobstore query, so a slow DB would get the pod killed).
+                # Liveness only: must never touch the runtime. health() does a
+                # live jobstore query; it is bounded now (CFOP-768), but a
+                # liveness answer should not depend on that staying true.
                 _json_response(self, HTTPStatus.OK, {"status": "alive"})
                 return
             if parsed.path == "/health":
@@ -280,9 +302,6 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
             return None
 
     return EventRuntimeHandler
-
-
-logger = logging.getLogger(__name__)
 
 
 def _start_poll_loop(
