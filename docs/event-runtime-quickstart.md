@@ -157,7 +157,7 @@ event_runtime:
 ## Endpoints
 
 - `GET /livez` — liveness only; answers without touching the runtime
-- `GET /health`
+- `GET /health` — readiness and a summary of every plugin; always 200. A scheduler whose health check raises or does not answer within 3s is reported in `scheduler` as `{"name": ..., "error": ...}`, so a jobstore outage shows in the payload and does not hang the probe. Keep the probe's `timeoutSeconds` above 3.
 - `GET /history?limit=50`
 - `GET /activity?limit=25&status=&action=` — the newest alerts with their full timelines (the legacy feed; served from the read model below)
 - `GET /v1/alerts` — alerts by their folded state, newest first. Parameters: `limit` (1–200, default 50), `cursor` (the previous page's `next_cursor`), `status`, `action`, `source`, `severity`, `since`/`until` (ISO 8601, bounds on the latest event), `q` (substring of summary, resource, namespace or alert id). An unknown parameter is a 400. Returns `{alerts, next_cursor, store, lagging}`: `store` is `postgres` or `outbox`, and `lagging` means Postgres answered while the outbox still holds events it has not replayed.

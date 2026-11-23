@@ -5,13 +5,14 @@ from __future__ import annotations
 from dataclasses import asdict
 import logging
 import os
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Dict, List, Optional
 
 from cfshared import tracing
 
 from .activity import build_activity_feed, filter_activities, filter_events
 from .alert_store import AlertPage, AlertQuery, AlertStoreUnavailable
+from .deadline import DeadlineExceeded, SingleFlight
 from .escalation import EscalationLedger
 from .models import ActionRequest, ActionResult, Alert, AlertSeverity, ContextEnvelope, Decision, DomainEvent, ScheduledTask
 from .notifications import should_notify
@@ -53,6 +54,13 @@ from .telemetry import (
 
 logger = logging.getLogger(__name__)
 
+# How long health() waits on the schedulers, all of them together. A scheduler's
+# health can be a live query (the APScheduler jobstore is), and /health is the
+# readiness probe, so this has to stay under the probe's timeoutSeconds or the
+# kubelet hangs up before the answer is written. tests/test_event_runtime_health.py
+# holds it under the chart's.
+HEALTH_CALL_TIMEOUT_SECONDS = 3.0
+
 
 class EventRuntime:
     """Coordinate alert intake, gating, context, decisions, and actions."""
@@ -67,6 +75,9 @@ class EventRuntime:
         # "Resolved:" notification when an escalated alert clears (None = off).
         self._escalation_ledger = escalation_ledger
         self._started = False
+        self.health_call_timeout_seconds = HEALTH_CALL_TIMEOUT_SECONDS
+        # One per scheduler, keyed by identity: see _scheduler_health.
+        self._scheduler_health_calls: Dict[int, SingleFlight] = {}
 
     def start(self) -> None:
         """Start registered plugins once for transports that need runtime lifecycle hooks."""
@@ -299,11 +310,11 @@ class EventRuntime:
                     break
 
         scheduler_states = []
+        # One deadline for the lot, so two slow schedulers cannot add up to
+        # more than a probe will wait.
+        deadline = monotonic() + self.health_call_timeout_seconds
         for scheduler in self.plugins.schedulers:
-            try:
-                scheduler_states.append(scheduler.health())
-            except Exception:
-                scheduler_states.append({"name": scheduler.name, "error": "health check failed"})
+            scheduler_states.append(self._scheduler_health(scheduler, deadline))
 
         return {
             "sources": [plugin.name for plugin in self.plugins.alert_sources],
@@ -318,6 +329,35 @@ class EventRuntime:
             "host_discovery": host_discovery_state,
             "sink": self.plugins.state_sink.health(),
         }
+
+    def _scheduler_health(self, scheduler, deadline: float) -> dict:
+        """One scheduler's health entry, answered by ``deadline`` whatever it does.
+
+        A scheduler that raises was always reported in the payload and never
+        failed the request. One that hangs was not: its query sat on a dead
+        connection, the probe that asked gave up, and the next probe started
+        another (CFOP-768). So the call is shared and bounded, and a hang reads
+        like any other failed check.
+        """
+        call = self._scheduler_health_calls.get(id(scheduler))
+        if call is None:
+            # setdefault, so two probes racing here end up sharing one.
+            call = self._scheduler_health_calls.setdefault(
+                id(scheduler),
+                SingleFlight(scheduler.health, name=f"health-{scheduler.name}"),
+            )
+        try:
+            return call.call(deadline - monotonic())
+        except DeadlineExceeded:
+            if call.first_report():
+                logger.warning(
+                    "scheduler %s did not answer its health check within %.1fs; "
+                    "reporting it as timed out until that call returns",
+                    scheduler.name, self.health_call_timeout_seconds,
+                )
+            return {"name": scheduler.name, "error": "health check timed out"}
+        except Exception:
+            return {"name": scheduler.name, "error": "health check failed"}
 
     def record_event(self, event_type: str, **payload: object) -> None:
         """Append an explicit domain event to the configured state sink."""
